@@ -1,0 +1,68 @@
+version: "3.9"
+services:
+  api:
+    build: .
+    container_name: trader_api
+    env_file: [.env]
+    environment:
+      PYTHONPATH: /app/src
+      # もし後で Ollama クライアントを実装したら、このURLを使う
+      OLLAMA_BASE_URL: http://ollama:11434
+      TZ: Asia/Tokyo
+    depends_on:
+      - ollama
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/app
+    command: bash -lc "bash run_api.sh"
+
+  bot:
+    build: .
+    container_name: trader_bot
+    env_file: [.env]
+    environment:
+      PYTHONPATH: /app/src
+      OLLAMA_BASE_URL: http://ollama:11434
+      TZ: Asia/Tokyo
+    depends_on:
+      - api
+      - ollama
+    volumes:
+      - ./:/app
+    command: bash -lc "bash run_bot.sh"
+
+  # ローカル推論サーバ（API代ゼロ）
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+
+  worker:
+    build: .
+    container_name: twitter_worker
+    env_file: [.env]
+    environment:
+      - PYTHONPATH=/app/src
+      - INGEST_API=http://api:8000/ingest
+      - TW_QUERY=$AAPL OR $ALM OR $BLMZ
+      - TW_SINCE_SEC=3600
+    depends_on: [api]
+    volumes:
+      - ./:/app
+    command: bash -lc "python -m workers.twitter_poll"
+
+  rssbridge:
+    image: rssbridge/rss-bridge:latest
+    container_name: rssbridge
+    ports:
+      - "3000:80"
+    restart: unless-stopped
+
+
+
+volumes:
+  ollama_models:
