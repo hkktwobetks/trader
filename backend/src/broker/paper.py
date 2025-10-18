@@ -9,7 +9,15 @@ class PaperBroker(Broker):
     name = "paper"
 
 
-    def place_order(self, ticker: str, side: str, qty: float, price: Optional[float] = None) -> dict:
+    def place_order(
+        self,
+        ticker: str,
+        side: str,
+        qty: float,
+        price: Optional[float] = None,
+        order_type: str = "LIMIT",
+        tif: str = "DAY",
+    ) -> dict:
         # 約定=即時、価格は直近値の代わりに指定/ダミー（1.0）
         px = price or 1.0
         with get_session() as s:

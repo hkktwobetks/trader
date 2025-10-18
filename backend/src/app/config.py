@@ -1,5 +1,9 @@
-from pydantic import BaseModel
 import os
+from typing import Optional
+
+from pydantic import BaseModel
+
+_moomoo_acc_raw = os.getenv("MOOMOO_ACC_ID")
 
 
 class Settings(BaseModel):
@@ -21,10 +25,10 @@ class Settings(BaseModel):
 
 
     broker: str = os.getenv("BROKER", "paper") # paper or moomoo
-    # moomoo placeholders
+    broker_env: str = os.getenv("BROKER_ENV", "SIMULATE") # SIMULATE or REAL
     moomoo_opend_host: str = os.getenv("MOOMOO_OPEND_HOST", "127.0.0.1")
     moomoo_opend_port: int = int(os.getenv("MOOMOO_OPEND_PORT", "11111"))
-    moomoo_paper_account: str = os.getenv("MOOMOO_PAPER_ACCOUNT", "SIMULATE")
+    moomoo_acc_id: Optional[int] = int(_moomoo_acc_raw) if _moomoo_acc_raw else None
 
 
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./trader.db")

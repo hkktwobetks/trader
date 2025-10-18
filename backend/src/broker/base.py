@@ -7,7 +7,15 @@ class Broker(ABC):
 
 
     @abstractmethod
-    def place_order(self, ticker: str, side: str, qty: float, price: Optional[float] = None) -> dict:
+    def place_order(
+        self,
+        ticker: str,
+        side: str,
+        qty: float,
+        price: Optional[float] = None,
+        order_type: str = "LIMIT",
+        tif: str = "DAY",
+    ) -> dict:
         ...
 
 

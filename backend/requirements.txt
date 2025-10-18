@@ -11,4 +11,4 @@ discord.py==2.4.0
 # OpenAI クライアント（抽象化の上で任意プロバイダに差し替え可）
 openai==1.42.0
 
-twitter-api-client==0.13.1
+

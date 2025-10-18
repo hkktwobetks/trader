@@ -1,4 +1,5 @@
-from pydantic import BaseModel
+from typing import Any, Dict
+from pydantic import BaseModel, Field
 
 
 class ExtractedSignal(BaseModel):
@@ -15,3 +16,9 @@ class OrderIn(BaseModel):
     side: str
     qty: float
     price: float | None = None
+
+
+class SignalIn(BaseModel):
+    text: str
+    source: str
+    meta: Dict[str, Any] = Field(default_factory=dict)
