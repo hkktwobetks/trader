@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trader Dashboard</title>
+<style>
+  :root { --bg: #0d1117; --card: #161b22; --border: #30363d; --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff; --green: #3fb950; --red: #f85149; --yellow: #d29922; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+  .container { max-width: 900px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 1.5rem; margin-bottom: 24px; display: flex; align-items: center; gap: 10px; }
+  h1 span { font-size: 1.8rem; }
+  h2 { font-size: 1.1rem; color: var(--muted); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; font-weight: 500; }
+
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+
+  .status-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+  .status-item { flex: 1; min-width: 180px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .status-item .label { color: var(--muted); font-size: 0.8rem; text-transform: uppercase; margin-bottom: 4px; }
+  .status-item .value { font-size: 1.2rem; font-weight: 600; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+  .dot.green { background: var(--green); }
+  .dot.red { background: var(--red); }
+  .dot.yellow { background: var(--yellow); }
+
+  label { display: block; color: var(--muted); font-size: 0.85rem; margin-bottom: 4px; }
+  input[type="text"], textarea { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; color: var(--text); font-family: monospace; font-size: 0.9rem; margin-bottom: 12px; }
+  textarea { min-height: 60px; resize: vertical; }
+  input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 20px; border: none; border-radius: 6px; font-size: 0.9rem; font-weight: 600; cursor: pointer; transition: opacity .15s; }
+  .btn:hover { opacity: 0.85; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+
+  .result { margin-top: 12px; padding: 12px; border-radius: 6px; font-size: 0.9rem; display: none; }
+  .result.ok { display: block; background: #0d2818; border: 1px solid var(--green); color: var(--green); }
+  .result.err { display: block; background: #2d1117; border: 1px solid var(--red); color: var(--red); }
+
+  .signals-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  .signals-table th { text-align: left; color: var(--muted); padding: 8px; border-bottom: 1px solid var(--border); font-weight: 500; }
+  .signals-table td { padding: 8px; border-bottom: 1px solid var(--border); }
+  .signals-table tr:hover { background: rgba(88,166,255,0.05); }
+  .side-buy { color: var(--green); font-weight: 600; }
+  .side-sell { color: var(--red); font-weight: 600; }
+
+  .help-text { color: var(--muted); font-size: 0.8rem; margin-bottom: 16px; line-height: 1.6; }
+
+  .tab-bar { display: flex; gap: 0; margin-bottom: 0; border-bottom: 1px solid var(--border); }
+  .tab { padding: 10px 20px; cursor: pointer; color: var(--muted); font-size: 0.9rem; border-bottom: 2px solid transparent; transition: all .15s; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  @media (max-width: 600px) { .status-row { flex-direction: column; } }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1><span>📈</span> Trader Dashboard</h1>
+
+  <!-- ステータス -->
+  <div class="status-row">
+    <div class="status-item">
+      <div class="label">Twitter Cookie</div>
+      <div class="value" id="cookie-status"><span class="dot yellow"></span>読込中...</div>
+    </div>
+    <div class="status-item">
+      <div class="label">Broker</div>
+      <div class="value" id="broker-status"><span class="dot yellow"></span>読込中...</div>
+    </div>
+    <div class="status-item">
+      <div class="label">LLM</div>
+      <div class="value" id="llm-status"><span class="dot yellow"></span>読込中...</div>
+    </div>
+  </div>
+
+  <!-- タブ -->
+  <div class="tab-bar">
+    <div class="tab active" data-tab="cookies">🔑 Cookie設定</div>
+    <div class="tab" data-tab="signals">📊 シグナル</div>
+    <div class="tab" data-tab="orders">📋 注文</div>
+  </div>
+
+  <!-- Cookie 入力タブ -->
+  <div class="tab-content active" id="tab-cookies">
+    <div class="card" style="margin-top:16px">
+      <h2>Twitter Cookie を入力</h2>
+      <p class="help-text">
+        ブラウザの DevTools → Application → Cookies → twitter.com から<br>
+        <code>auth_token</code> と <code>ct0</code> をコピーして貼り付けてください。<br>
+        または、Cookie文字列をまとめて貼り付けると自動解析します。
+      </p>
+
+      <label for="cookie-paste">Cookie 文字列（まとめて貼り付け可）</label>
+      <textarea id="cookie-paste" placeholder="auth_token=xxxxx; ct0=yyyyy; ..."></textarea>
+
+      <label for="auth-token">auth_token</label>
+      <input type="text" id="auth-token" placeholder="40文字の16進文字列">
+
+      <label for="ct0">ct0</label>
+      <input type="text" id="ct0" placeholder="ct0 の値">
+
+      <button class="btn btn-primary" id="save-btn" onclick="saveCookies()">
+        💾 保存 &amp; テスト
+      </button>
+      <button class="btn btn-outline" style="margin-left:8px" onclick="checkStatus()">
+        🔄 ステータス確認
+      </button>
+
+      <div class="result" id="save-result"></div>
+    </div>
+  </div>
+
+  <!-- シグナルタブ -->
+  <div class="tab-content" id="tab-signals">
+    <div class="card" style="margin-top:16px">
+      <h2>最新シグナル</h2>
+      <table class="signals-table">
+        <thead><tr><th>時刻</th><th>銘柄</th><th>方向</th><th>信頼度</th><th>ソース</th></tr></thead>
+        <tbody id="signals-body"><tr><td colspan="5" style="color:var(--muted)">読込中...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 注文タブ -->
+  <div class="tab-content" id="tab-orders">
+    <div class="card" style="margin-top:16px">
+      <h2>注文履歴</h2>
+      <table class="signals-table">
+        <thead><tr><th>時刻</th><th>銘柄</th><th>方向</th><th>数量</th><th>ステータス</th></tr></thead>
+        <tbody id="orders-body"><tr><td colspan="5" style="color:var(--muted)">読込中...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = location.origin;
+
+// --- タブ切替 ---
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+  });
+});
+
+// --- Cookie 文字列の自動解析 ---
+document.getElementById('cookie-paste').addEventListener('input', (e) => {
+  const raw = e.target.value;
+  const pairs = raw.split(/;\s*/);
+  for (const p of pairs) {
+    const [k, ...v] = p.split('=');
+    const key = k.trim();
+    const val = v.join('=').trim();
+    if (key === 'auth_token') document.getElementById('auth-token').value = val;
+    if (key === 'ct0') document.getElementById('ct0').value = val;
+  }
+});
+
+// --- Cookie 保存 ---
+async function saveCookies() {
+  const btn = document.getElementById('save-btn');
+  const res = document.getElementById('save-result');
+  const authToken = document.getElementById('auth-token').value.trim();
+  const ct0 = document.getElementById('ct0').value.trim();
+
+  if (!authToken || !ct0) {
+    res.className = 'result err';
+    res.textContent = 'auth_token と ct0 の両方を入力してください';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = '⏳ テスト中...';
+  res.className = 'result';
+  res.style.display = 'none';
+
+  try {
+    const r = await fetch(API + '/settings/twitter-cookies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ auth_token: authToken, ct0: ct0 }),
+    });
+    const data = await r.json();
+
+    if (r.ok && data.valid) {
+      res.className = 'result ok';
+      res.textContent = `✅ Cookie 保存 & 検証成功 (version: ${data.version})`;
+    } else if (r.ok) {
+      res.className = 'result err';
+      res.textContent = `⚠️ Cookie は保存しましたが検証に失敗しました: ${data.error || '不明なエラー'}`;
+    } else {
+      res.className = 'result err';
+      res.textContent = `❌ エラー: ${data.detail || JSON.stringify(data)}`;
+    }
+  } catch (e) {
+    res.className = 'result err';
+    res.textContent = `❌ 通信エラー: ${e.message}`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '💾 保存 & テスト';
+    checkStatus();
+  }
+}
+
+// --- ステータス確認 ---
+async function checkStatus() {
+  // Cookie ステータス
+  try {
+    const r = await fetch(API + '/settings/twitter-cookies');
+    const d = await r.json();
+    const el = document.getElementById('cookie-status');
+    if (d.has_cookies) {
+      el.innerHTML = `<span class="dot green"></span>設定済み (${d.auth_token_preview})`;
+    } else {
+      el.innerHTML = `<span class="dot red"></span>未設定`;
+    }
+  } catch { document.getElementById('cookie-status').innerHTML = `<span class="dot red"></span>接続エラー`; }
+
+  // Health
+  try {
+    const r = await fetch(API + '/health');
+    const d = await r.json();
+    document.getElementById('broker-status').innerHTML = d.ok
+      ? `<span class="dot green"></span>接続済み`
+      : `<span class="dot red"></span>エラー`;
+    document.getElementById('llm-status').innerHTML = `<span class="dot green"></span>Ready`;
+  } catch {
+    document.getElementById('broker-status').innerHTML = `<span class="dot red"></span>接続エラー`;
+    document.getElementById('llm-status').innerHTML = `<span class="dot red"></span>接続エラー`;
+  }
+
+  // シグナル
+  try {
+    const r = await fetch(API + '/signals');
+    const signals = await r.json();
+    const tbody = document.getElementById('signals-body');
+    if (!signals.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">シグナルなし</td></tr>';
+    } else {
+      tbody.innerHTML = signals.slice(0, 30).map(s => `
+        <tr>
+          <td>${new Date(s.created_at).toLocaleString('ja-JP')}</td>
+          <td><strong>$${s.ticker}</strong></td>
+          <td class="${s.side === 'BUY' ? 'side-buy' : 'side-sell'}">${s.side}</td>
+          <td>${s.confidence != null ? (s.confidence * 100).toFixed(0) + '%' : '-'}</td>
+          <td>${s.author || '-'}</td>
+        </tr>
+      `).join('');
+    }
+  } catch { document.getElementById('signals-body').innerHTML = '<tr><td colspan="5" style="color:var(--muted)">読込エラー</td></tr>'; }
+
+  // 注文
+  try {
+    const r = await fetch(API + '/orders');
+    const orders = await r.json();
+    const tbody = document.getElementById('orders-body');
+    if (!orders.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">注文なし</td></tr>';
+    } else {
+      tbody.innerHTML = orders.slice(0, 30).map(o => `
+        <tr>
+          <td>${new Date(o.created_at).toLocaleString('ja-JP')}</td>
+          <td><strong>$${o.ticker}</strong></td>
+          <td class="${o.side === 'BUY' ? 'side-buy' : 'side-sell'}">${o.side}</td>
+          <td>${o.qty}</td>
+          <td>${o.status}</td>
+        </tr>
+      `).join('');
+    }
+  } catch { document.getElementById('orders-body').innerHTML = '<tr><td colspan="5" style="color:var(--muted)">読込エラー</td></tr>'; }
+}
+
+// 初回ロード
+checkStatus();
+// 30秒ごとに自動更新
+setInterval(checkStatus, 30000);
+</script>
+</body>
+</html>

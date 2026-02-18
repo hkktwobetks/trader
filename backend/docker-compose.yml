@@ -1,21 +1,19 @@
-version: "3.9"
 services:
   api:
     build: .
-    container_name: trader_api
-    env_file: [.env]
-    environment:
-      PYTHONPATH: /app/src
-      # もし後で Ollama クライアントを実装したら、このURLを使う
-      OLLAMA_BASE_URL: http://ollama:11434
-      TZ: Asia/Tokyo
-    depends_on:
-      - ollama
+    container_name: trader-api
     ports:
       - "8000:8000"
+    environment:
+      - MOOMOO_OPEND_HOST=opend
+      - MOOMOO_OPEND_PORT=11111
+    env_file:
+      - .env
+    # depends_on:
+    #   - opend  # uncomment when using moomoo broker
     volumes:
-      - ./:/app
-    command: bash -lc "bash run_api.sh"
+      - .:/app
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 
   bot:
     build: .
@@ -48,21 +46,28 @@ services:
     environment:
       - PYTHONPATH=/app/src
       - INGEST_API=http://api:8000/ingest
-      - TW_QUERY=$AAPL OR $ALM OR $BLMZ
+      - TW_QUERY=AAPL OR ALM OR BLMZ
       - TW_SINCE_SEC=3600
     depends_on: [api]
     volumes:
       - ./:/app
     command: bash -lc "python -m workers.twitter_poll"
 
-  rssbridge:
-    image: rssbridge/rss-bridge:latest
-    container_name: rssbridge
+  opend:
+    build:
+      context: ./opend
+      dockerfile: Dockerfile
+    container_name: moomoo-opend
+    profiles: [moomoo]  # only start with: docker compose --profile moomoo up
     ports:
-      - "3000:80"
+      - "11111:11111"
+      - "22222:22222"
+    env_file:
+      - .env
+    volumes:
+      - ./opend_data:/opt/opend/FutuOpenD/Log
+      - ../AppData.dat:/opt/opend/FutuOpenD/AppData.dat
     restart: unless-stopped
-
-
 
 volumes:
   ollama_models:

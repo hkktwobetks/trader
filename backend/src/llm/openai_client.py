@@ -10,10 +10,13 @@ PROMPT = """
 """
 
 class OpenAILLM(LLM):
-    def __init__(self, model: str, api_key: str):
+    def __init__(self, model: str, api_key: str, base_url: str | None = None):
         # importをここに置くと、OpenAI未インストールでも他の実装で進められる
         from openai import OpenAI
-        self.client = OpenAI(api_key=api_key)
+        client_kwargs = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        self.client = OpenAI(**client_kwargs)
         self.model = model
 
     def extract(self, text: str) -> Optional[ExtractedSignal]:
