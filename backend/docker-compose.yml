@@ -1,0 +1,73 @@
+services:
+  api:
+    build: .
+    container_name: trader-api
+    ports:
+      - "8000:8000"
+    environment:
+      - MOOMOO_OPEND_HOST=opend
+      - MOOMOO_OPEND_PORT=11111
+    env_file:
+      - .env
+    # depends_on:
+    #   - opend  # uncomment when using moomoo broker
+    volumes:
+      - .:/app
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+
+  bot:
+    build: .
+    container_name: trader_bot
+    env_file: [.env]
+    environment:
+      PYTHONPATH: /app/src
+      OLLAMA_BASE_URL: http://ollama:11434
+      TZ: Asia/Tokyo
+    depends_on:
+      - api
+      - ollama
+    volumes:
+      - ./:/app
+    command: bash -lc "bash run_bot.sh"
+
+  # ローカル推論サーバ（API代ゼロ）
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+
+  worker:
+    build: .
+    container_name: twitter_worker
+    env_file: [.env]
+    environment:
+      - PYTHONPATH=/app/src
+      - INGEST_API=http://api:8000/ingest
+      - TW_QUERY=AAPL OR ALM OR BLMZ
+      - TW_SINCE_SEC=3600
+    depends_on: [api]
+    volumes:
+      - ./:/app
+    command: bash -lc "python -m workers.twitter_poll"
+
+  opend:
+    build:
+      context: ./opend
+      dockerfile: Dockerfile
+    container_name: moomoo-opend
+    profiles: [moomoo]  # only start with: docker compose --profile moomoo up
+    ports:
+      - "11111:11111"
+      - "22222:22222"
+    env_file:
+      - .env
+    volumes:
+      - ./opend_data:/opt/opend/FutuOpenD/Log
+      - ../AppData.dat:/opt/opend/FutuOpenD/AppData.dat
+    restart: unless-stopped
+
+volumes:
+  ollama_models:

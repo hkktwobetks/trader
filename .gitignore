@@ -1,0 +1,48 @@
+*.env
+.env.*
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+*.eggs/
+.venv/
+
+# DB
+*.db
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug screenshots
+*.png
+debug_*.png
+error.png
+login_error.png
+
+# Browser profiles
+.firefox_profile/
+.playwright_profile/
+
+# OpenD / moomoo binaries
+*.tar.gz
+*.dat
+*.dat:*
+opend_data/
+backend/opend/*.tar.gz
+backend/opend/FutuOpenD*
+backend/opend/*.xml
+
+# Scraper cache
+backend/data/
+
+# Backup files
+*.bak
+
+# Lock files (uv)
+uv.lock
