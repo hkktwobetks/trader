@@ -9,8 +9,12 @@ if [ -f .env ]; then
   set +a
 fi
 
-# モジュール検索パス
-export PYTHONPATH="${PYTHONPATH:-./src}:./src"
+# モジュール検索パス（app / api を src から解決）
+export PYTHONPATH="${PYTHONPATH:-}:./src"
 
-# Uvicorn 実行（SIGINT/SIGTERM を渡すため exec）
-exec uv run uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
+# Uvicorn 実行（uv があれば uv run、なければ python3 -m）
+if command -v uv >/dev/null 2>&1; then
+  exec uv run uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
+else
+  exec python3 -m uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
+fi

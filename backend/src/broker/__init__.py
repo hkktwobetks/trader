@@ -10,14 +10,6 @@ from .alpaca_client import AlpacaBroker
 
 def _build_broker() -> Broker:
     broker_name = settings.broker.lower()
-    if broker_name == "moomoo":
-        from .moomoo_client import MoomooBroker
-        return MoomooBroker(
-            host=settings.moomoo_opend_host,
-            port=settings.moomoo_opend_port,
-            trd_env=settings.broker_env,
-            acc_id=settings.moomoo_acc_id,
-        )
     if broker_name == "alpaca":
         return AlpacaBroker(
             api_key=settings.alpaca_api_key,

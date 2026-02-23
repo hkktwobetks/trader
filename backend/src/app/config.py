@@ -3,8 +3,6 @@ from typing import Optional
 
 from pydantic import BaseModel
 
-_moomoo_acc_raw = os.getenv("MOOMOO_ACC_ID")
-
 
 class Settings(BaseModel):
     discord_bot_token: str = os.getenv("DISCORD_BOT_TOKEN", "")
@@ -29,12 +27,7 @@ class Settings(BaseModel):
     min_confidence: float = float(os.getenv("MIN_CONFIDENCE", "0.7"))
 
 
-    broker: str = os.getenv("BROKER", "paper") # paper, moomoo, or alpaca
-    broker_env: str = os.getenv("BROKER_ENV", "SIMULATE") # SIMULATE or REAL
-    moomoo_opend_host: str = os.getenv("MOOMOO_OPEND_HOST", "127.0.0.1")
-    moomoo_opend_port: int = int(os.getenv("MOOMOO_OPEND_PORT", "11111"))
-    moomoo_acc_id: Optional[int] = int(_moomoo_acc_raw) if _moomoo_acc_raw else None
-
+    broker: str = os.getenv("BROKER", "paper") # paper or alpaca
     # Alpaca
     alpaca_api_key: str = os.getenv("ALPACA_API_KEY", "")
     alpaca_secret_key: str = os.getenv("ALPACA_SECRET_KEY", "")

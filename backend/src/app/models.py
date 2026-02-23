@@ -53,3 +53,17 @@ class PnL(SQLModel, table=True):
     date: str # YYYY-MM-DD
     realized: float = 0.0
     unrealized: float = 0.0
+
+
+class MarketBar(SQLModel, table=True):
+    """シンプルなOHLCVバー（銘柄×時間足×時刻）。"""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    symbol: str
+    timeframe: str  # e.g. 1Min, 5Min, 1Hour, 1Day
+    ts: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float

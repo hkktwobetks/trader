@@ -1,7 +1,9 @@
-.venv
-__pycache__/
+__pycache__
 *.pyc
-*.pyo
-.trader_cache/
-.trader_logs/
-trader.db
+.git
+.env
+.env.*
+*.db
+.venv
+venv
+*.md

@@ -20,8 +20,9 @@ RUN /root/.local/bin/uv pip install --system -r requirements.txt
 # アプリ本体
 COPY src ./src
 COPY run_api.sh run_bot.sh ./
+RUN mkdir -p /app/data
 ENV PYTHONPATH=/app/src TZ=Asia/Tokyo
 
 EXPOSE 8000
-# イメージは共通で作り、起動コマンドは compose 側で分ける
-CMD ["bash","-lc","bash run_api.sh"]
+# 起動（compose で上書き可能）
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

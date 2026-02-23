@@ -29,15 +29,6 @@ login_error.png
 .firefox_profile/
 .playwright_profile/
 
-# OpenD / moomoo binaries
-*.tar.gz
-*.dat
-*.dat:*
-opend_data/
-backend/opend/*.tar.gz
-backend/opend/FutuOpenD*
-backend/opend/*.xml
-
 # Scraper cache
 backend/data/
 

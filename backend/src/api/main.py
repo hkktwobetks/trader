@@ -8,7 +8,9 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from app.db import init_db, get_session
-from app.models import Order, Position, Signal
+from app.models import Order, Position, Signal, PnL
+from app.performance import build_equity_from_pnl
+from app.backtest import run_sma_crossover
 from app.config import settings
 from app.schemas import SignalIn, ExtractedSignal
 from app.utils import naive_extract
@@ -154,6 +156,83 @@ def list_signals():
     with get_session() as s:
         rows = s.exec(select(Signal).order_by(Signal.created_at.desc()).limit(100)).all()
         return rows
+
+
+@app.get("/metrics/pnl/daily")
+def get_daily_pnl():
+    """
+    日次 PnL のシンプルな一覧を返す。
+    将来的には Execution からの自動計算や、銘柄別内訳などに拡張可能。
+    """
+    with get_session() as s:
+        rows = s.exec(select(PnL).order_by(PnL.date)).all()
+        return rows
+
+
+@app.get("/metrics/performance")
+def get_performance(initial_equity: float = 100_000.0):
+    """PnL テーブルから単純なパフォーマンス指標を返す。"""
+    with get_session() as s:
+        pnls = s.exec(select(PnL)).all()
+    summary = build_equity_from_pnl(pnls, initial_equity=initial_equity)
+    return {
+        "start_date": summary.start_date,
+        "end_date": summary.end_date,
+        "initial_equity": summary.initial_equity,
+        "final_equity": summary.final_equity,
+        "total_return_pct": summary.total_return_pct,
+        "cagr_pct": summary.cagr_pct,
+        "max_drawdown_pct": summary.max_drawdown_pct,
+        "equity_curve": [
+            {"date": p.date, "equity": p.equity} for p in summary.equity_curve
+        ],
+    }
+
+
+class SmaBacktestIn(BaseModel):
+    symbol: str
+    timeframe: str = "1Day"
+    start: str
+    end: str
+    short_window: int = 5
+    long_window: int = 20
+    initial_equity: float = 100_000.0
+
+
+@app.post("/backtest/sma")
+def run_sma_backtest(payload: SmaBacktestIn):
+    """
+    シンプルな SMA クロス戦略のバックテスト。
+    事前に MarketBar に対象銘柄・期間のバーが入っていることが前提。
+    """
+    result = run_sma_crossover(
+        symbol=payload.symbol,
+        timeframe=payload.timeframe,
+        start=payload.start,
+        end=payload.end,
+        short_window=payload.short_window,
+        long_window=payload.long_window,
+        initial_equity=payload.initial_equity,
+    )
+    return {
+        "symbol": result.symbol,
+        "start": result.start,
+        "end": result.end,
+        "initial_equity": result.initial_equity,
+        "final_equity": result.final_equity,
+        "total_return_pct": result.total_return_pct,
+        "max_drawdown_pct": result.max_drawdown_pct,
+        "trades": [
+            {
+                "entry_date": t.entry_date,
+                "exit_date": t.exit_date,
+                "entry_price": t.entry_price,
+                "exit_price": t.exit_price,
+                "pnl": t.pnl,
+            }
+            for t in result.trades
+        ],
+    }
 
 
 @app.post("/signals")
