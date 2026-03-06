@@ -4,9 +4,22 @@
 # Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 *.egg-info/
 *.eggs/
 .venv/
+
+# Node
+node_modules/
+**/node_modules/
+.vite/
+**/.vite/
+dist/
+**/dist/
 
 # DB
 *.db
