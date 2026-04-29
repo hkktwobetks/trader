@@ -6,48 +6,50 @@ services:
       - "8000:8000"
     env_file:
       - .env
-    # depends_on:
-    volumes:
-      - .:/app
-    command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
-
-  bot:
-    build: .
-    container_name: trader_bot
-    env_file: [.env]
     environment:
       PYTHONPATH: /app/src
-      OLLAMA_BASE_URL: http://ollama:11434
       TZ: Asia/Tokyo
-    depends_on:
-      - api
-      - ollama
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/trader.db}
+      MOOMOO_OPEND_HOST: ${MOOMOO_OPEND_HOST:-opend}
+      MOOMOO_OPEND_PORT: ${MOOMOO_OPEND_PORT:-11111}
     volumes:
-      - ./:/app
-    command: bash -lc "bash run_bot.sh"
-
-  # ローカル推論サーバ（API代ゼロ）
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_models:/root/.ollama
+      - backend_data:/app/data
+    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
   worker:
     build: .
     container_name: twitter_worker
-    env_file: [.env]
+    env_file:
+      - .env
     environment:
-      - PYTHONPATH=/app/src
-      - INGEST_API=http://api:8000/ingest
-      - TW_QUERY=AAPL OR ALM OR BLMZ
-      - TW_SINCE_SEC=3600
+      PYTHONPATH: /app/src
+      API_BASE_URL: http://api:8000
+      TZ: Asia/Tokyo
     depends_on: [api]
     volumes:
       - ./:/app
     command: bash -lc "python -m workers.twitter_poll"
 
+  opend:
+    build:
+      context: ..
+      dockerfile: backend/opend/Dockerfile
+    container_name: moomoo-opend
+    profiles: [moomoo]  # only start with: docker compose --profile moomoo up
+    ports:
+      - "11111:11111"
+      - "22222:22222"
+    env_file:
+      - .env
+    volumes:
+      - ./opend_data:/opt/opend/FutuOpenD/Log
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/11111'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 120s
+
 volumes:
-  ollama_models:
+  backend_data:

@@ -211,6 +211,69 @@ def analyze_with_groq(tweet_text: str) -> dict | None:
         print(f"❌ LLM解析エラー: {e}")
         return None
 
+def format_for_moomoo(signal: dict) -> dict:
+    """
+    moomoo Python API (moomoo-api) の place_order 形式に変換
+    参考: https://openapi.moomoo.com/moomoo-api-doc/en/trade/place-order.html
+    """
+    from enum import IntEnum
+    
+    # SDK 定数の簡易模倣（本番は moomoo.TrdEnv 等を利用）
+    class TrdSide(IntEnum):
+        BUY = 1
+        SELL = 2
+    
+    class OrderType(IntEnum):
+        NORMAL = 0      # 指値
+        MARKET = 1      # 成行
+    
+    class TrdEnv(IntEnum):
+        SIMULATE = 0    # ペーパートレード
+        REAL = 1        # 本番
+    
+    class TimeInForce(IntEnum):
+        DAY = 0         # 当日のみ
+        GTC = 1         # キャンセルまで有効
+    
+    # 銘柄コード（日本株は JP.XXXX 形式）
+    code = signal.get("code", "")
+    market_code = f"JP.{code}"
+    
+    # 売買方向
+    trd_side = TrdSide.BUY if signal.get("action") == "BUY" else TrdSide.SELL
+    
+    # 注文タイプ
+    has_price = signal.get("price") is not None
+    order_type = OrderType.NORMAL if has_price else OrderType.MARKET
+    
+    # 価格（成行でも必須なので0を設定）
+    price = signal.get("price") if has_price else 0
+    
+    # place_order() の引数形式
+    order_params = {
+        "price": price,
+        "qty": 100,  # 最小単元
+        "code": market_code,
+        "trd_side": trd_side,
+        "order_type": order_type,
+        "trd_env": TrdEnv.SIMULATE,  # .envのBROKER_ENVで切り替え可能に
+        "time_in_force": TimeInForce.DAY,
+        "remark": f"twitter_alert_{signal.get('code')}",
+    }
+    
+    return {
+        "params": order_params,
+        "meta": {
+            "source": "twitter_alert",
+            "confidence": signal.get("confidence", 0.5),
+            "original_code": code,
+            "action": signal.get("action"),
+            "reason": signal.get("reason", ""),
+            "name": signal.get("name", ""),
+        }
+    }
+
+
 def main():
     username = os.getenv("TWITTER_USERS", "snatchan_comm").split(",")[0].strip()
     

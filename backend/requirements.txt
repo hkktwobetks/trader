@@ -16,8 +16,5 @@ twitter-api-client==0.10.21
 playwright==1.49.0
 selenium==4.27.1
 webdriver-manager==4.0.2
-futu-api
-# Alpaca Markets
-alpaca-py>=0.31.0
-
+moomoo-api>=10,<11
 

@@ -420,7 +420,7 @@ export function Dashboard() {
             <Card withBorder padding="lg">
               <Text fw={600} mb="xs">SMA クロス戦略</Text>
               <Text size="xs" c="dimmed" mb="md">
-                対象銘柄・期間の日足バーが MarketBar に登録されている必要があります（Alpaca 取得スクリプトで投入）。
+                対象銘柄・期間の日足バーが MarketBar に登録されている必要があります。
               </Text>
               <Divider mb="md" />
               <Grid>
