@@ -2,7 +2,7 @@ from .base import Broker
 from typing import Optional
 from sqlmodel import select
 from app.db import get_session
-from app.models import Order, Position, Execution
+from app.models import Position, Execution
 
 
 class PaperBroker(Broker):
@@ -21,8 +21,6 @@ class PaperBroker(Broker):
         # 約定=即時、価格は直近値の代わりに指定/ダミー（1.0）
         px = price or 1.0
         with get_session() as s:
-            order = Order(broker=self.name, ticker=ticker, side=side, qty=qty, price=px, status="FILLED")
-            s.add(order)
             # ポジション更新
             pos = s.exec(select(Position).where(Position.ticker == ticker)).first()
             signed_qty = qty if side == "BUY" else -qty
@@ -32,13 +30,24 @@ class PaperBroker(Broker):
                     s.delete(pos)
                 else:
                     # 単純平均
-                    pos.avg_price = (abs(pos.qty)*pos.avg_price + qty*px)/max(abs(new_qty),1)
+                    pos.avg_price = (abs(pos.qty) * pos.avg_price + qty * px) / max(abs(new_qty), 1)
                     pos.qty = new_qty
             else:
                 s.add(Position(ticker=ticker, qty=signed_qty, avg_price=px))
+
+            # API レイヤで Order レコードを保存するため、ここでは約定とポジションだけ更新する。
             s.add(Execution(order_id=0, ticker=ticker, side=side, qty=qty, price=px))
             s.commit()
-            return {"status": "filled", "price": px}
+            return {
+                "broker": self.name,
+                "ticker": ticker,
+                "side": side,
+                "qty": qty,
+                "price": px,
+                "status": "FILLED",
+                "reason": None,
+                "order_id": None,
+            }
 
 
     def positions(self) -> dict[str, dict]:

@@ -7,6 +7,7 @@ TICKER_PATTERN = re.compile(r"\$(?P<ticker>[A-Z]{1,6})")
 SIDE_PATTERN = re.compile(r"\b(?P<side>BUY|LONG|SELL|SHORT)\b", re.I)
 # フォールバック: $ なしでも BUY/SELL の近くにあるティッカーを拾う
 FALLBACK_PATTERN = re.compile(r"(?P<ticker>\b[A-Z]{2,5}\b).*?(?P<side>BUY|LONG|SELL|SHORT)", re.I)
+DEFAULT_CONFIDENCE = 0.8
 
 
 def naive_extract(text: str) -> ExtractedSignal | None:
@@ -18,7 +19,7 @@ def naive_extract(text: str) -> ExtractedSignal | None:
         ticker = ticker_m.group("ticker").upper()
         side_raw = side_m.group("side").upper()
         side = "BUY" if side_raw in {"BUY", "LONG"} else "SELL"
-        return ExtractedSignal(ticker=ticker, side=side)
+        return ExtractedSignal(ticker=ticker, side=side, confidence=DEFAULT_CONFIDENCE)
 
     # 2. フォールバック
     fb = FALLBACK_PATTERN.search(text)
@@ -26,6 +27,6 @@ def naive_extract(text: str) -> ExtractedSignal | None:
         ticker = fb.group("ticker").upper()
         side_raw = fb.group("side").upper()
         side = "BUY" if side_raw in {"BUY", "LONG"} else "SELL"
-        return ExtractedSignal(ticker=ticker, side=side)
+        return ExtractedSignal(ticker=ticker, side=side, confidence=DEFAULT_CONFIDENCE)
 
     return None
