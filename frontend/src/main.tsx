@@ -11,6 +11,8 @@ import { SignalsPage } from "./pages/Signals";
 import { PerformancePage } from "./pages/Performance";
 import { BacktestPage } from "./pages/Backtest";
 import { TwitterCookiesPage } from "./pages/TwitterCookies";
+import { DexterPage } from "./pages/Dexter";
+import { SettingsPage } from "./pages/Settings";
 
 const theme = createTheme({
   primaryColor: "blue",
@@ -37,7 +39,9 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
             <Route path="/signals" element={<SignalsPage />} />
             <Route path="/performance" element={<PerformancePage />} />
             <Route path="/backtest" element={<BacktestPage />} />
+            <Route path="/dexter" element={<DexterPage />} />
             <Route path="/twitter-cookies" element={<TwitterCookiesPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
 
             {/* Legacy: old all-in-one tabs dashboard */}
             <Route path="/legacy" element={<Dashboard />} />

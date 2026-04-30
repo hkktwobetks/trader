@@ -1,5 +1,5 @@
 # ビルドコンテキストはリポジトリルート（docker-compose で指定）
-# ルートに moomoo_OpenD_9.6.5618_Ubuntu18.04.tar.gz を置く（.gitignore）
+# 展開済みの OpenD ディレクトリを backend/opend/ に置く
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -16,14 +16,12 @@ ENV LC_ALL=en_US.UTF-8
 
 WORKDIR /opt/opend
 
-COPY moomoo_OpenD_9.6.5618_Ubuntu18.04.tar.gz /opt/opend/
+COPY backend/opend/moomoo_OpenD_10.4.6408_Ubuntu18.04/moomoo_OpenD_10.4.6408_Ubuntu18.04 /opt/opend/FutuOpenD
 COPY backend/opend/entrypoint.sh /opt/opend/entrypoint.sh
 
-RUN tar -xzf moomoo_OpenD_9.6.5618_Ubuntu18.04.tar.gz \
-    && rm moomoo_OpenD_9.6.5618_Ubuntu18.04.tar.gz \
-    && mv moomoo_OpenD_9.6.5618_Ubuntu18.04/moomoo_OpenD_9.6.5618_Ubuntu18.04 FutuOpenD \
-    && rm -rf moomoo_OpenD_9.6.5618_Ubuntu18.04 \
-    && chmod +x FutuOpenD/OpenD \
+RUN chmod +x FutuOpenD/OpenD \
+    && chmod +x FutuOpenD/WebSocket \
+    && chmod +x FutuOpenD/Update \
     && chmod +x /opt/opend/entrypoint.sh
 
 WORKDIR /opt/opend/FutuOpenD

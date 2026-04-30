@@ -1,85 +1,201 @@
-## Broker Integration
+## ブローカー統合
 
-This project supports multiple brokers via an abstraction layer (`src/broker/base.py`).
-Set the `BROKER` environment variable to choose one: `paper` or `moomoo`.
+ブローカーは `src/broker/base.py` の抽象レイヤーで切り替え可能。
+`BROKER` 環境変数で `paper` または `moomoo` を指定する。
+
+---
+
+### LLM（シグナル抽出）
+
+ツイートなどのテキストからティッカー・売買方向・信頼度を抽出するために LLM を使用する。
+`LLM_PROVIDER` 環境変数で実装を切り替える。
+
+#### Groq（デフォルト推奨）
+
+無料枠で高速に動作する。`llama-3.3-70b-versatile` がデフォルトモデル。
+
+```bash
+LLM_PROVIDER=openai
+OPENAI_API_KEY=gsk_xxxxxxxx          # Groq API キー
+OPENAI_API_BASE=https://api.groq.com/openai/v1
+OPENAI_MODEL=llama-3.3-70b-versatile
+```
+
+#### Ollama（ローカルモデル）
+
+```bash
+ollama pull qwen3:14b
+ollama serve
+```
+
+```bash
+LLM_PROVIDER=ollama
+OPENAI_API_BASE=http://127.0.0.1:11434/v1
+OPENAI_API_KEY=ollama
+OPENAI_MODEL=qwen3:14b
+```
+
+推奨モデル：
+- `qwen3:14b`：品質・速度バランスが良い
+- `qwen3:30b`：VRAM に余裕があれば抽出精度が上がる
+
+#### OpenAI 互換サーバー（その他）
+
+```bash
+LLM_PROVIDER=local_openai
+OPENAI_API_BASE=http://127.0.0.1:11434/v1
+OPENAI_API_KEY=sk-xxx
+OPENAI_MODEL=your-model
+```
 
 ---
 
 ### Moomoo OpenD
 
-> ⚠️ **Note:** moomoo JP does NOT support OpenAPI. You need a Futu HK or moomoo US account.
+> 日本の moomoo/FUTU JP アカウントは `MOOMOO_LOGIN_REGION=jp`、`MOOMOO_SECURITY_FIRM=auto` の設定が必要。
 
-#### Prerequisites
-- Install and launch Moomoo OpenD locally, then sign in with an account that has paper trading access.
-- Ensure the OpenD bridge is reachable from the backend (default: `127.0.0.1:11111`).
+#### 前提
+- OpenD をローカル起動し、ペーパー取引以上のアクセスが可能なアカウントでサインイン済みであること。
+- バックエンドから OpenD に到達できること（デフォルト: `127.0.0.1:11111`）。
 
-#### Environment Variables
+#### 環境変数
+
 ```bash
 BROKER=moomoo
-BROKER_ENV=SIMULATE   # set to REAL for live trading
-MARKET=US             # or JP / HK
+BROKER_ENV=SIMULATE              # REAL にすると本番取引
+TWITTER_BROKER_ENV=REAL          # Twitter シグナルの発注先
+DEXTER_BROKER_ENV=SIMULATE       # Dexter シグナルの発注先
+TWITTER_AUTO_TRADE_ENABLED=true
+DEXTER_AUTO_TRADE_ENABLED=false
+MARKET=US                        # US / JP / HK
 MOOMOO_OPEND_HOST=127.0.0.1
 MOOMOO_OPEND_PORT=11111
-MOOMOO_ACC_ID=<optional account id>
+MOOMOO_LOGIN_REGION=jp
+MOOMOO_SECURITY_FIRM=auto
+MOOMOO_PREFERRED_ACC_TYPE=auto   # CASH / MARGIN / DERIVATIVES
+MOOMOO_TRADE_PASSWORD_MD5=<取引パスワードの MD5>
+MOOMOO_ACC_ID=<任意。アカウント ID を固定する場合>
+SYNC_INTERVAL_MINUTES=5
 ```
 
-#### Docker Usage
+シークレットは `backend/.env.local` に記載し、`backend/.env` はコミット用テンプレートとして保持する。
 
-OpenD can be started via `docker compose --profile moomoo up` from the repository root or from `backend/`.
-Configure the login-related variables in `backend/.env`:
+#### Docker 起動
+
+```bash
+# リポジトリルートから
+docker compose --profile moomoo up -d opend
+```
+
+`opend` サービスは `moomoo` プロファイルに属しており、`--profile moomoo` を付けた場合のみ起動する。
+Docker では `opend` がバックエンドのネットワーク名前空間を共有（`network_mode: "service:backend"`）するため、
+バックエンドは `127.0.0.1:11111` で OpenD に接続する。
+
+ログイン用の変数を `backend/.env.local` に設定する：
 
 ```bash
 MOOMOO_LOGIN_ACCOUNT=your_account
 MOOMOO_LOGIN_PASSWORD_MD5=your_password_md5
-MOOMOO_LOGIN_REGION=us
+MOOMOO_LOGIN_REGION=jp
+MOOMOO_SECURITY_FIRM=auto
+MOOMOO_TRADE_PASSWORD_MD5=your_trade_password_md5
 MOOMOO_LANG=en
 MOOMOO_LOG_LEVEL=info
-MOOMOO_API_IP=0.0.0.0
-MOOMOO_API_PORT=11111
 ```
 
-The `opend` service is behind the `moomoo` profile. It will NOT start unless explicitly requested:
+#### 状態同期
+
+手動同期：
+
 ```bash
-docker compose --profile moomoo up -d
+curl -X POST http://127.0.0.1:8000/sync
 ```
 
-#### Connection Test
+状態エンドポイント：
+
+```bash
+GET /orders
+GET /positions
+GET /executions
+GET /pnl
+```
+
+定期同期（sync_worker が OpenD の起動完了を待ってから開始）：
+
+```bash
+docker compose --profile moomoo up -d sync_worker
+```
+
+sync_worker は `SYNC_INTERVAL_MINUTES` おきに `POST /sync` を呼び出し、注文・約定・ポジション・PnL を更新する。
+
+#### 接続テスト
+
 ```bash
 cd backend
 ./scripts/run_moomoo_connection_test.sh
 ```
 
-#### MD5 (OpenD login password)
+#### MD5 生成（OpenD ログインパスワード）
+
 ```bash
 ./scripts/generate_md5.sh "your_password"
 ```
 
 ---
 
-### Paper Broker
+### Twitter ワーカー
 
-`BROKER=paper` uses the local SQLModel-backed implementation for simple end-to-end testing.
-It does not require OpenD and is the safest default while wiring up the rest of the system.
+```bash
+TWITTER_USERS=snatchan_comm       # 監視するアカウント（カンマ区切りで複数指定可）
+POLL_INTERVAL_SEC=30
+X_AUTH_TOKEN=<auth_token>
+X_CT0=<ct0>
+```
+
+Cookie は `/settings/twitter-cookies` エンドポイントまたはダッシュボード（`/dashboard`）から登録できる。
+`auth_token` と `ct0` はブラウザの DevTools（Application > Cookies > x.com）から取得する。
+
+Twitter の GraphQL エンドポイント ID が変わった場合は環境変数で上書きできる：
+
+```bash
+TW_EP_USER_TWEETS=naBcZ4al-iTCFBYGOAMzBQ
+TW_EP_USER_BY_SCREENNAME=sLVLhk0bGj3MVFEKTdax1w
+```
 
 ---
 
-### Interactive Brokers (IBKR) — future option
+### Dexter ブリッジ
 
-> 📝 **Memo:** IBKR is the most full-featured option for multi-market trading.
+Dexter は別プロセスの調査エージェント。出力を `source=dexter` としてシステムに取り込む。
 
-#### Pros
-- 150+ markets, 33 countries (US, JP, HK, EU stocks, options, futures, FX)
-- TWS API / Web API
-- Japanese residents can open accounts (IBSJ)
-- Advanced order types (TWAP, VWAP, algo orders)
+手動投入：
 
-#### Cons
-- Requires TWS or IB Gateway process to be running (similar to OpenD)
-- More complex setup
-- Commission per trade ($0.0035/share)
+```bash
+cd backend
+python scripts/post_dexter_signal.py '$AAPL BUY swing trade idea from Dexter'
+```
 
-#### Implementation notes
-- Python SDK: `ib_insync` (high-level) or `ibapi` (official)
-- Would need a new `broker/ibkr_client.py` implementing `Broker` base class
-- IB Gateway would need its own Docker service (similar to opend)
-- Reference: [interactivebrokers.com/api](https://www.interactivebrokers.com/en/trading/ib-api.php)
+Dexter を 1 回実行してシグナルを自動投入：
+
+```bash
+export DEXTER_DIR=/path/to/dexter
+cd backend
+python scripts/run_dexter_signal.py "Find one US large-cap momentum trade for today"
+```
+
+定期実行（dexter_worker プロファイル）：
+
+```bash
+export DEXTER_DIR=/path/to/dexter
+export DEXTER_QUERY="Find one US large-cap momentum trade for today"
+docker compose --profile dexter up -d dexter_worker
+```
+
+`DEXTER_POLL_INTERVAL_SEC` おきに Dexter を実行し、`NO_SIGNAL` 以外の出力を `/signals` に投入する。
+
+---
+
+### Paper ブローカー
+
+`BROKER=paper` はローカルの SQLite DB 上で動作するシミュレーション実装。
+OpenD は不要で、システム全体の動作確認に使用する。

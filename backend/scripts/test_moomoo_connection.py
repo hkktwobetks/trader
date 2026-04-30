@@ -13,10 +13,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from dotenv import load_dotenv
-from moomoo import RET_OK, OpenQuoteContext, OpenSecTradeContext, TrdEnv, TrdMarket
+from moomoo import RET_OK, OpenQuoteContext, OpenSecTradeContext, SubType, TrdEnv, TrdMarket
+
+from broker.moomoo_sdk import configure_sdk_encryption
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
+load_dotenv(BASE_DIR / ".env.local", override=True)
 
 
 def _running_inside_docker() -> bool:
@@ -74,6 +77,18 @@ def _api_phase_timeout_sec() -> float:
     return float(os.getenv("MOOMOO_API_TEST_TIMEOUT", "25"))
 
 
+def _quote_context():
+    host, port = _host_port()
+    is_encrypt = configure_sdk_encryption(os.getenv("MOOMOO_RSA_PRIVATE_KEY_PATH", "").strip())
+    return OpenQuoteContext(host=host, port=port, is_encrypt=is_encrypt)
+
+
+def _trade_context():
+    host, port = _host_port()
+    is_encrypt = configure_sdk_encryption(os.getenv("MOOMOO_RSA_PRIVATE_KEY_PATH", "").strip())
+    return OpenSecTradeContext(host=host, port=port, is_encrypt=is_encrypt)
+
+
 def _run_timed_phase(phase_name: str, fn) -> bool:
     """SDK が無限リトライしないよう、フェーズ単位で上限時間を設ける。"""
     sec = _api_phase_timeout_sec()
@@ -95,7 +110,7 @@ def test_quote_connection() -> bool:
     print(f"📡 OpenD 相場API: {host}:{port}")
 
     try:
-        quote_ctx = OpenQuoteContext(host=host, port=port)
+        quote_ctx = _quote_context()
         ret, data = quote_ctx.get_global_state()
 
         if ret == RET_OK:
@@ -121,7 +136,7 @@ def test_trade_connection() -> bool:
     print(f"\n💹 取引API (環境: {broker_env})")
 
     try:
-        trd_ctx = OpenSecTradeContext(host=host, port=port)
+        trd_ctx = _trade_context()
 
         ret, data = trd_ctx.get_acc_list()
         if ret == RET_OK:
@@ -137,22 +152,25 @@ def test_trade_connection() -> bool:
         ret, data = trd_ctx.get_acc_list()
         if ret == RET_OK:
             df = data
-            jp_acc = df[
-                df["trd_market_auth"].apply(
-                    lambda x: TrdMarket.JP in x if isinstance(x, list) else False
-                )
-            ]
-            if not jp_acc.empty:
-                acc_id = int(jp_acc.iloc[0]["acc_id"])
-                print(f"\n   日本株アカウント: {acc_id}")
+            if "trd_market_auth" in df.columns:
+                jp_acc = df[
+                    df["trd_market_auth"].apply(
+                        lambda x: TrdMarket.JP in x if isinstance(x, list) else False
+                    )
+                ]
+                if not jp_acc.empty:
+                    acc_id = int(jp_acc.iloc[0]["acc_id"])
+                    print(f"\n   日本株アカウント: {acc_id}")
 
-                ret, data = trd_ctx.position_list_query(trd_env=trd_env, acc_id=acc_id)
-                if ret == RET_OK:
-                    print(f"   ポジション: {len(data)}件")
+                    ret, data = trd_ctx.position_list_query(trd_env=trd_env, acc_id=acc_id)
+                    if ret == RET_OK:
+                        print(f"   ポジション: {len(data)}件")
 
-                ret, data = trd_ctx.order_list_query(trd_env=trd_env, acc_id=acc_id)
-                if ret == RET_OK:
-                    print(f"   注文履歴: {len(data)}件")
+                    ret, data = trd_ctx.order_list_query(trd_env=trd_env, acc_id=acc_id)
+                    if ret == RET_OK:
+                        print(f"   注文履歴: {len(data)}件")
+            else:
+                print("   補足: acc_list に trd_market_auth 列が無いため、市場別の追加確認はスキップしました。")
 
         trd_ctx.close()
         return True
@@ -170,7 +188,12 @@ def test_stock_quote() -> bool:
     print(f"\n📈 株価取得テスト ({code})")
 
     try:
-        quote_ctx = OpenQuoteContext(host=host, port=port)
+        quote_ctx = _quote_context()
+        ret, data = quote_ctx.subscribe([code], [SubType.QUOTE], subscribe_push=False)
+        if ret != RET_OK:
+            print(f"❌ quote購読失敗: {data}")
+            quote_ctx.close()
+            return False
         ret, data = quote_ctx.get_stock_quote([code])
 
         if ret == RET_OK:

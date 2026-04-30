@@ -2,7 +2,7 @@ from .base import Broker
 from typing import Optional
 from sqlmodel import select
 from app.db import get_session
-from app.models import Position, Execution
+from app.models import Position
 
 
 class PaperBroker(Broker):
@@ -35,8 +35,7 @@ class PaperBroker(Broker):
             else:
                 s.add(Position(ticker=ticker, qty=signed_qty, avg_price=px))
 
-            # API レイヤで Order レコードを保存するため、ここでは約定とポジションだけ更新する。
-            s.add(Execution(order_id=0, ticker=ticker, side=side, qty=qty, price=px))
+            # API レイヤで Order レコードを保存し、その後 sync_executions で Execution を起こす。
             s.commit()
             return {
                 "broker": self.name,
@@ -57,4 +56,7 @@ class PaperBroker(Broker):
 
 
     def cancel_all(self) -> None:
+        return None
+
+    def sync_order(self, order_id: str) -> dict | None:
         return None

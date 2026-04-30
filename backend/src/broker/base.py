@@ -27,3 +27,6 @@ class Broker(ABC):
     @abstractmethod
     def cancel_all(self) -> None:
         ...
+
+    def sync_order(self, order_id: str) -> dict | None:
+        return None

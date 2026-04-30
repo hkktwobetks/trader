@@ -6,23 +6,39 @@ from typing import Any, Dict, Optional
 import pandas as pd
 from moomoo import (
     ModifyOrderOp,
+    OpenQuoteContext,
     OpenSecTradeContext,
     OrderStatus,
     OrderType,
     RET_OK,
+    SubType,
     TimeInForce,
     TrdEnv,
     TrdMarket,
     TrdSide,
+    SecurityFirm,
 )
 
 from .base import Broker
+from .moomoo_sdk import configure_sdk_encryption
 
 log = logging.getLogger(__name__)
 
 _ENV_MAP: Dict[str, TrdEnv] = {
     "SIMULATE": TrdEnv.SIMULATE,
     "REAL": TrdEnv.REAL,
+}
+
+_MARKET_MAP: Dict[str, TrdMarket] = {
+    "US": TrdMarket.US,
+    "JP": TrdMarket.JP,
+    "HK": TrdMarket.HK,
+}
+
+_SECURITY_FIRM_MAP: Dict[str, SecurityFirm] = {
+    "FUTUSECURITIES": SecurityFirm.FUTUSECURITIES,
+    "FUTUINC": SecurityFirm.FUTUINC,
+    "FUTUJP": SecurityFirm.FUTUJP,
 }
 
 _SIDE_MAP: Dict[str, TrdSide] = {
@@ -60,6 +76,14 @@ _CANCELABLE_STATUSES = [
     OrderStatus.FILLED_PART,
 ]
 
+_ACCOUNT_TYPE_PRIORITY: Dict[str, int] = {
+    "CASH": 0,
+    "MARGIN": 1,
+    "DERIVATIVES": 2,
+}
+
+_SUPPORTED_ACCOUNT_TYPES = set(_ACCOUNT_TYPE_PRIORITY)
+
 
 class MoomooBroker(Broker):
     name = "moomoo"
@@ -69,15 +93,32 @@ class MoomooBroker(Broker):
         host: str,
         port: int,
         trd_env: str,
+        rsa_private_key_path: str = "",
         acc_id: Optional[int] = None,
         market: str = "US",
+        login_region: str = "",
+        security_firm: str = "auto",
+        preferred_acc_type: str = "auto",
+        trade_password: str = "",
+        trade_password_md5: str = "",
     ):
         self._host = host
         self._port = port
         self._market = (market or "US").upper()
+        self._login_region = (login_region or "").strip().lower()
+        self._security_firm = self._parse_security_firm(security_firm)
+        self._preferred_acc_type = self._parse_preferred_acc_type(preferred_acc_type)
+        self._trade_password = trade_password.strip()
+        self._trade_password_md5 = trade_password_md5.strip()
         self._trd_env = self._parse_env(trd_env)
+        self._rsa_private_key_path = rsa_private_key_path.strip()
         self._ctx = self._connect()
-        self._acc_id = self._initialise_account(acc_id)
+        try:
+            self._unlock_trade_if_configured()
+            self._acc_id = self._initialise_account(acc_id)
+        except Exception:
+            self._ctx.close()
+            raise
 
     # --------------------------------------------------------------------- #
     # Lifecycle helpers
@@ -91,27 +132,49 @@ class MoomooBroker(Broker):
     def _connect(self) -> OpenSecTradeContext:
         # moomoo証券（日本）などは OpenUSTradeContext ではなく Universal / Sec コンテキストが必要
         try:
-            ctx = OpenSecTradeContext(host=self._host, port=self._port)
+            is_encrypt = configure_sdk_encryption(self._rsa_private_key_path)
+            ctx = OpenSecTradeContext(
+                filter_trdmarket=self._resolve_trade_market(),
+                host=self._host,
+                port=self._port,
+                is_encrypt=is_encrypt,
+                security_firm=self._security_firm,
+            )
         except Exception as exc:  # pragma: no cover - SDK raises varied exceptions
             log.exception("Failed to connect to Moomoo OpenD at %s:%s", self._host, self._port)
             raise RuntimeError("Unable to connect to Moomoo OpenD") from exc
-        log.info("Connected to Moomoo OpenD at %s:%s", self._host, self._port)
+        log.info(
+            "Connected to Moomoo OpenD at %s:%s market=%s security_firm=%s",
+            self._host,
+            self._port,
+            self._market,
+            self._security_firm,
+        )
         return ctx
+
+    def _quote_context(self) -> OpenQuoteContext:
+        is_encrypt = configure_sdk_encryption(self._rsa_private_key_path)
+        return OpenQuoteContext(host=self._host, port=self._port, is_encrypt=is_encrypt)
 
     def _filter_by_market_auth(self, acc_df: pd.DataFrame) -> pd.DataFrame:
         """trd_market_auth に MARKET（US/JP/HK 等）が含まれる口座に絞る。列がない・合致なしはそのまま。"""
         try:
-            tm = getattr(TrdMarket, self._market)
-        except AttributeError:
+            tm = self._resolve_trade_market()
+        except ValueError:
             log.warning("Unknown MARKET=%s for Moomoo; skipping trd_market_auth filter", self._market)
             return acc_df
         col = acc_df.get("trd_market_auth")
+        if col is None:
+            col = acc_df.get("trdmarket_auth")
         if col is None:
             return acc_df
 
         def has_auth(val: Any) -> bool:
             if isinstance(val, (list, tuple)):
-                return tm in val
+                if tm in val:
+                    return True
+                market_name = getattr(tm, "name", str(tm))
+                return market_name in val or self._market in val
             return False
 
         filtered = acc_df[col.apply(has_auth)]
@@ -122,6 +185,37 @@ class MoomooBroker(Broker):
             )
             return acc_df
         return filtered
+
+    def _resolve_trade_market(self) -> TrdMarket:
+        market = _MARKET_MAP.get(self._market)
+        if market is None:
+            raise ValueError(f"Unsupported Moomoo market '{self._market}'.")
+        return market
+
+    def _parse_security_firm(self, security_firm: str) -> SecurityFirm:
+        normalized = (security_firm or "auto").strip().upper()
+        if normalized in {"", "AUTO"}:
+            if self._login_region == "jp":
+                return SecurityFirm.FUTUJP
+            return SecurityFirm.FUTUSECURITIES
+        parsed = _SECURITY_FIRM_MAP.get(normalized)
+        if parsed is None:
+            raise ValueError(
+                f"Unsupported Moomoo security firm '{security_firm}'. "
+                "Use auto, FUTUSECURITIES, FUTUINC, or FUTUJP."
+            )
+        return parsed
+
+    def _parse_preferred_acc_type(self, preferred_acc_type: str) -> str | None:
+        normalized = (preferred_acc_type or "auto").strip().upper()
+        if normalized in {"", "AUTO"}:
+            return None
+        if normalized not in _SUPPORTED_ACCOUNT_TYPES:
+            raise ValueError(
+                f"Unsupported Moomoo account type preference '{preferred_acc_type}'. "
+                "Use auto, CASH, MARGIN, or DERIVATIVES."
+            )
+        return normalized
 
     def _initialise_account(self, requested_acc_id: Optional[int]) -> int:
         ret, acc_df = self._ctx.get_acc_list()
@@ -155,13 +249,89 @@ class MoomooBroker(Broker):
                 )
             selected = requested_acc_id
         else:
-            selected = available_ids[0]
+            selected = self._select_best_account(acc_df, available_ids)
         log.info(
             "Using Moomoo account %s in %s environment",
             selected,
             target_env,
         )
         return selected
+
+    def _select_best_account(self, acc_df: pd.DataFrame, available_ids: list[int]) -> int:
+        candidates: list[tuple[int, int, float, int]] = []
+        preferred_currency = "USD" if self._market == "US" else "JPY"
+        candidate_df = acc_df
+
+        if self._preferred_acc_type:
+            filtered = acc_df[acc_df["acc_type"].astype(str).str.upper() == self._preferred_acc_type]
+            if filtered.empty:
+                log.warning(
+                    "Requested Moomoo account type %s not found in eligible accounts; falling back to default priority.",
+                    self._preferred_acc_type,
+                )
+            else:
+                candidate_df = filtered
+
+        for _, row in candidate_df.iterrows():
+            acc_id_raw = row.get("acc_id")
+            if pd.isna(acc_id_raw):
+                continue
+            acc_id = int(acc_id_raw)
+            if acc_id not in available_ids:
+                continue
+            acc_type = str(row.get("acc_type", "")).upper()
+            priority = _ACCOUNT_TYPE_PRIORITY.get(acc_type, 99)
+            buying_power = self._query_buying_power(acc_id, preferred_currency)
+            candidates.append((priority, -buying_power, acc_id, buying_power))
+
+        if not candidates:
+            return available_ids[0]
+
+        candidates.sort()
+        selected_priority, _, selected_acc_id, selected_power = candidates[0]
+        log.info(
+            "Selected Moomoo account %s with acc_type_priority=%s buying_power=%s currency=%s preferred_acc_type=%s",
+            selected_acc_id,
+            selected_priority,
+            selected_power,
+            preferred_currency,
+            self._preferred_acc_type or "auto",
+        )
+        return selected_acc_id
+
+    def _query_buying_power(self, acc_id: int, currency: str) -> float:
+        try:
+            ret, info = self._ctx.accinfo_query(
+                trd_env=self._trd_env,
+                acc_id=acc_id,
+                currency=currency,
+            )
+            if ret != RET_OK or getattr(info, "empty", True):
+                return 0.0
+            row = info.iloc[0]
+            value = row.get("power")
+            if value in (None, "N/A"):
+                value = row.get("usd_net_cash_power" if currency == "USD" else "jpy_net_cash_power")
+            return float(value or 0.0)
+        except Exception:
+            log.warning("Failed to query buying power for Moomoo account %s", acc_id, exc_info=True)
+            return 0.0
+
+    def _unlock_trade_if_configured(self) -> None:
+        if self._trd_env != TrdEnv.REAL:
+            return
+        if not self._trade_password and not self._trade_password_md5:
+            return
+        kwargs: Dict[str, Any] = {"is_unlock": True}
+        if self._trade_password_md5:
+            kwargs["password_md5"] = self._trade_password_md5
+        else:
+            kwargs["password"] = self._trade_password
+        ret, data = self._ctx.unlock_trade(**kwargs)
+        if ret != RET_OK:
+            msg = data if isinstance(data, str) else "Unknown error"
+            raise RuntimeError(f"Moomoo trade unlock failed: {msg}")
+        log.info("Moomoo trade unlock succeeded for REAL environment")
 
     def close(self) -> None:
         try:
@@ -305,6 +475,30 @@ class MoomooBroker(Broker):
         log.debug("Fetched %d positions from Moomoo", len(positions))
         return positions
 
+    def quote_last_price(self, ticker: str) -> float:
+        code = self._normalise_symbol(ticker)
+        quote_ctx: OpenQuoteContext | None = None
+        try:
+            quote_ctx = self._quote_context()
+            ret, data = quote_ctx.subscribe([code], [SubType.QUOTE], subscribe_push=False)
+            if ret != RET_OK:
+                msg = data if isinstance(data, str) else "Unknown error"
+                raise RuntimeError(f"Moomoo quote subscribe failed: {msg}")
+            ret, data = quote_ctx.get_stock_quote([code])
+            if ret != RET_OK:
+                msg = data if isinstance(data, str) else "Unknown error"
+                raise RuntimeError(f"Moomoo stock quote retrieval failed: {msg}")
+            if data.empty:
+                raise RuntimeError(f"Moomoo stock quote returned no rows for {code}")
+            row = data.iloc[0]
+            price = row.get("last_price", row.get("cur_price"))
+            if price is None:
+                raise RuntimeError(f"Moomoo stock quote returned no last price for {code}")
+            return float(price)
+        finally:
+            if quote_ctx is not None:
+                quote_ctx.close()
+
     def cancel_all(self) -> None:
         ret, data = self._ctx.order_list_query(
             trd_env=self._trd_env,
@@ -325,6 +519,8 @@ class MoomooBroker(Broker):
             ret, err = self._ctx.modify_order(
                 ModifyOrderOp.CANCEL,
                 order_id=order_id,
+                qty=0,
+                price=0,
                 trd_env=self._trd_env,
                 acc_id=self._acc_id,
             )
@@ -332,3 +528,23 @@ class MoomooBroker(Broker):
                 log.warning("Failed to cancel order %s: %s", order_id, err)
             else:
                 log.info("Cancelled Moomoo order %s", order_id)
+
+    def sync_order(self, order_id: str) -> Dict[str, Any] | None:
+        ret, data = self._ctx.order_list_query(
+            order_id=order_id,
+            trd_env=self._trd_env,
+            acc_id=self._acc_id,
+        )
+        if ret != RET_OK:
+            msg = data if isinstance(data, str) else "Unknown error"
+            raise RuntimeError(f"Moomoo order sync failed: {msg}")
+        if data.empty:
+            return None
+        row = data.iloc[0].to_dict()
+        return self._format_order_response(
+            row,
+            fallback_ticker=self._strip_symbol(str(row.get("code", ""))),
+            fallback_side=str(row.get("trd_side", "")),
+            fallback_qty=float(row.get("qty") or 0.0),
+            fallback_price=float(row.get("price") or 0.0),
+        )

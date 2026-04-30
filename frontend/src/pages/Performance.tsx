@@ -7,7 +7,7 @@ import {
   Divider,
   Grid,
   Group,
-  Loader,
+  SegmentedControl,
   SimpleGrid,
   Stack,
   Table,
@@ -15,56 +15,91 @@ import {
   Title,
   Tooltip,
 } from "@mantine/core";
-import { Activity, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
+import { RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
 
 const API = "/api";
 
-type DailyPnl = {
+type PnlRow = {
   id: number;
   date: string;
   realized: number;
   unrealized: number;
 };
 
-type PerformanceSummary = {
-  start_date: string | null;
-  end_date: string | null;
-  initial_equity: number;
-  final_equity: number;
-  total_return_pct: number;
-  cagr_pct: number | null;
-  max_drawdown_pct: number;
-  equity_curve: { date: string; equity: number }[];
+type ExecutionRow = {
+  id: number;
+  order_id: number;
+  ticker: string;
+  side: string;
+  qty: number;
+  price: number;
+  executed_at: string;
 };
+
+type PositionRow = {
+  id: number;
+  ticker: string;
+  qty: number;
+  avg_price: number;
+};
+
+function PnlText({ value }: { value: number }) {
+  const color = value > 0 ? "teal" : value < 0 ? "red" : undefined;
+  return (
+    <Text
+      size="sm"
+      c={color}
+      fw={value !== 0 ? 600 : undefined}
+      style={{ fontVariantNumeric: "tabular-nums" }}
+    >
+      {value >= 0 ? "+" : ""}
+      {value.toFixed(2)}
+    </Text>
+  );
+}
+
+function SideBadge({ side }: { side: string }) {
+  const s = side.toLowerCase();
+  const color = s.includes("buy") ? "teal" : s.includes("sell") ? "red" : "gray";
+  return <Badge color={color} variant="light" size="sm">{side}</Badge>;
+}
 
 function StatCard({
   label,
   value,
-  hint,
-  tone,
+  sub,
+  positive,
 }: {
   label: string;
   value: string;
-  hint?: string;
-  tone?: "good" | "bad" | "neutral";
+  sub?: string;
+  positive?: boolean | null;
 }) {
-  const color = tone === "good" ? "green" : tone === "bad" ? "red" : "gray";
+  const color = positive === true ? "teal" : positive === false ? "red" : "gray";
+  const Icon = positive === true ? TrendingUp : positive === false ? TrendingDown : null;
   return (
     <Card withBorder>
-      <Text size="xs" tt="uppercase" fw={700} c="dimmed">
+      <Text size="xs" tt="uppercase" fw={700} c="dimmed" mb={6}>
         {label}
       </Text>
-      <Group justify="space-between" mt={6}>
-        <Text fz={26} fw={800} style={{ fontVariantNumeric: "tabular-nums" }}>
+      <Group justify="space-between" align="flex-end">
+        <Text
+          fz={24}
+          fw={800}
+          c={positive === true ? "teal" : positive === false ? "red" : undefined}
+          style={{ fontVariantNumeric: "tabular-nums" }}
+        >
           {value}
         </Text>
-        <Badge color={color} variant="light">
-          {tone === "good" ? <TrendingUp size={14} /> : tone === "bad" ? <TrendingDown size={14} /> : <Activity size={14} />}
-        </Badge>
+        {Icon && (
+          <Badge color={color} variant="light" p={6}>
+            <Icon size={14} />
+          </Badge>
+        )}
       </Group>
-      {hint && (
-        <Text size="xs" c="dimmed" mt={6}>
-          {hint}
+      {sub && (
+        <Text size="xs" c="dimmed" mt={4}>
+          {sub}
         </Text>
       )}
     </Card>
@@ -72,96 +107,110 @@ function StatCard({
 }
 
 export function PerformancePage() {
-  const [health, setHealth] = useState<"ok" | "ng" | "loading">("loading");
+  const [env, setEnv] = useState<"SIMULATE" | "REAL">("SIMULATE");
+  const [pnl, setPnl] = useState<PnlRow[]>([]);
+  const [executions, setExecutions] = useState<ExecutionRow[]>([]);
+  const [positions, setPositions] = useState<PositionRow[]>([]);
   const [refreshing, setRefreshing] = useState(false);
-  const [pnl, setPnl] = useState<DailyPnl[]>([]);
-  const [perf, setPerf] = useState<PerformanceSummary | null>(null);
 
-  const fetchAll = async (): Promise<void> => {
+  const fetchAll = async (e = env) => {
     setRefreshing(true);
     try {
-      const [hRes, pnlRes, perfRes] = await Promise.all([
-        fetch(`${API}/health`),
-        fetch(`${API}/metrics/pnl/daily`),
-        fetch(`${API}/metrics/performance`),
+      const [pnlRes, exRes, posRes] = await Promise.all([
+        fetch(`${API}/pnl?broker_env=${e}`),
+        fetch(`${API}/executions?broker_env=${e}`),
+        fetch(`${API}/positions?broker_env=${e}`),
       ]);
-      setHealth(hRes.ok ? "ok" : "ng");
-      if (pnlRes.ok) setPnl((await pnlRes.json()) as DailyPnl[]);
-      if (perfRes.ok) setPerf((await perfRes.json()) as PerformanceSummary);
-    } catch {
-      setHealth("ng");
+      if (pnlRes.ok) setPnl((await pnlRes.json()) as PnlRow[]);
+      if (exRes.ok) setExecutions((await exRes.json()) as ExecutionRow[]);
+      if (posRes.ok) setPositions((await posRes.json()) as PositionRow[]);
     } finally {
       setRefreshing(false);
     }
   };
 
-  useEffect(() => {
-    fetchAll();
-  }, []);
+  const handleEnvChange = (v: string) => {
+    const next = v as "SIMULATE" | "REAL";
+    setEnv(next);
+    fetchAll(next);
+  };
+
+  useEffect(() => { fetchAll(env); }, []);
 
   const stats = useMemo(() => {
-    if (!perf) return null;
-    const totalTone = perf.total_return_pct >= 0 ? "good" : "bad";
-    const ddTone = perf.max_drawdown_pct < 0 ? "bad" : "neutral";
-    return {
-      totalReturn: {
-        value: `${perf.total_return_pct >= 0 ? "+" : ""}${perf.total_return_pct.toFixed(2)}%`,
-        tone: totalTone as "good" | "bad",
-      },
-      cagr: {
-        value: perf.cagr_pct == null ? "—" : `${perf.cagr_pct >= 0 ? "+" : ""}${perf.cagr_pct.toFixed(2)}%`,
-        tone: (perf.cagr_pct ?? 0) >= 0 ? ("good" as const) : ("bad" as const),
-      },
-      mdd: {
-        value: `${perf.max_drawdown_pct.toFixed(2)}%`,
-        tone: ddTone as "good" | "bad" | "neutral",
-      },
-      equity: {
-        value: `${perf.final_equity.toFixed(2)}`,
-        tone: perf.final_equity >= perf.initial_equity ? ("good" as const) : ("bad" as const),
-      },
-    };
-  }, [perf]);
+    const totalRealized = pnl.reduce((s, r) => s + r.realized, 0);
+    const totalUnrealized = positions.reduce((s, p) => s + p.qty * p.avg_price, 0);
+    const today = new Date().toISOString().slice(0, 10);
+    const todayRow = pnl.find((r) => r.date === today);
+    return { totalRealized, totalUnrealized, todayPnl: todayRow?.realized ?? null, tradeCount: executions.length };
+  }, [pnl, executions, positions]);
+
+  const sortedPnl = useMemo(() => [...pnl].sort((a, b) => b.date.localeCompare(a.date)), [pnl]);
+  const sortedExec = useMemo(
+    () => [...executions].sort((a, b) => b.executed_at.localeCompare(a.executed_at)),
+    [executions]
+  );
 
   return (
     <Stack gap="lg">
       <Group justify="space-between" align="flex-end">
         <Box>
           <Title order={2}>Performance</Title>
-          <Text c="dimmed" size="sm" mt={4}>
-            実運用の損益・リターン・ドローダウンを確認します。
-          </Text>
+          <Text c="dimmed" size="sm" mt={2}>損益・約定履歴・ポジション</Text>
         </Box>
         <Group gap="sm">
-          <Badge color={health === "ok" ? "green" : health === "ng" ? "red" : "gray"} variant="light" size="lg">
-            API: {health.toUpperCase()}
-          </Badge>
+          <SegmentedControl
+            size="xs"
+            value={env}
+            onChange={handleEnvChange}
+            data={[
+              { value: "SIMULATE", label: "SIMULATE" },
+              { value: "REAL", label: "REAL" },
+            ]}
+            color={env === "REAL" ? "orange" : "blue"}
+          />
           <Tooltip label="再読み込み">
-            <ActionIcon variant="subtle" size="lg" onClick={fetchAll} loading={refreshing} aria-label="refresh">
-              <RefreshCw size={20} />
+            <ActionIcon variant="subtle" size="lg" onClick={() => fetchAll(env)} loading={refreshing} aria-label="refresh">
+              <RefreshCw size={18} />
             </ActionIcon>
           </Tooltip>
         </Group>
       </Group>
 
-      <SimpleGrid cols={{ base: 1, sm: 2, lg: 4 }} spacing="md">
-        <StatCard label="Total Return" value={stats?.totalReturn.value ?? "—"} tone={stats?.totalReturn.tone} />
-        <StatCard label="CAGR" value={stats?.cagr.value ?? "—"} tone={stats?.cagr.tone} />
-        <StatCard label="Max Drawdown" value={stats?.mdd.value ?? "—"} tone={stats?.mdd.tone} />
-        <StatCard label="Final Equity" value={stats?.equity.value ?? "—"} tone={stats?.equity.tone} />
+      <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="md">
+        <StatCard
+          label="Realized PnL"
+          value={`${stats.totalRealized >= 0 ? "+" : ""}${stats.totalRealized.toFixed(2)}`}
+          sub="全期間累積"
+          positive={stats.totalRealized > 0 ? true : stats.totalRealized < 0 ? false : null}
+        />
+        <StatCard
+          label="Today"
+          value={stats.todayPnl == null ? "—" : `${stats.todayPnl >= 0 ? "+" : ""}${stats.todayPnl.toFixed(2)}`}
+          sub="本日の実現損益"
+          positive={stats.todayPnl == null ? null : stats.todayPnl > 0 ? true : stats.todayPnl < 0 ? false : null}
+        />
+        <StatCard
+          label="Trades"
+          value={String(stats.tradeCount)}
+          sub="総約定件数"
+        />
+        <StatCard
+          label="Positions"
+          value={String(positions.length)}
+          sub="保有銘柄数"
+        />
       </SimpleGrid>
 
       <Grid>
         <Grid.Col span={{ base: 12, md: 7 }}>
           <Card withBorder>
-            <Text fw={700} mb="xs">
-              Daily PnL
+            <Text fw={700} mb="sm">
+              Daily PnL <Text span c="dimmed" size="sm">({sortedPnl.length})</Text>
             </Text>
             <Divider mb="sm" />
-            {pnl.length === 0 ? (
-              <Text size="sm" c="dimmed">
-                PnL データがありません。
-              </Text>
+            {sortedPnl.length === 0 ? (
+              <Text size="sm" c="dimmed">PnL データがありません。</Text>
             ) : (
               <Table striped highlightOnHover>
                 <Table.Thead>
@@ -172,17 +221,11 @@ export function PerformancePage() {
                   </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>
-                  {pnl.slice(0, 120).map((row) => (
+                  {sortedPnl.slice(0, 90).map((row) => (
                     <Table.Tr key={row.id}>
-                      <Table.Td>{row.date}</Table.Td>
-                      <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                        {row.realized >= 0 ? "+" : ""}
-                        {row.realized.toFixed(2)}
-                      </Table.Td>
-                      <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                        {row.unrealized >= 0 ? "+" : ""}
-                        {row.unrealized.toFixed(2)}
-                      </Table.Td>
+                      <Table.Td style={{ fontSize: 13, fontVariantNumeric: "tabular-nums" }}>{row.date}</Table.Td>
+                      <Table.Td style={{ textAlign: "right" }}><PnlText value={row.realized} /></Table.Td>
+                      <Table.Td style={{ textAlign: "right" }}><PnlText value={row.unrealized} /></Table.Td>
                     </Table.Tr>
                   ))}
                 </Table.Tbody>
@@ -192,58 +235,78 @@ export function PerformancePage() {
         </Grid.Col>
 
         <Grid.Col span={{ base: 12, md: 5 }}>
-          <Card withBorder>
-            <Text fw={700} mb="xs">
-              Summary
+          <Card withBorder h="100%">
+            <Text fw={700} mb="sm">
+              Positions <Text span c="dimmed" size="sm">({positions.length})</Text>
             </Text>
             <Divider mb="sm" />
-            {perf && (perf.start_date ?? perf.end_date) ? (
-              <Stack gap={6}>
-                <Group justify="space-between">
-                  <Text size="sm" c="dimmed">
-                    Period
-                  </Text>
-                  <Text size="sm" fw={600} style={{ fontVariantNumeric: "tabular-nums" }}>
-                    {perf.start_date} ~ {perf.end_date}
-                  </Text>
-                </Group>
-                <Group justify="space-between">
-                  <Text size="sm" c="dimmed">
-                    Initial
-                  </Text>
-                  <Text size="sm" fw={600} style={{ fontVariantNumeric: "tabular-nums" }}>
-                    {perf.initial_equity.toFixed(2)}
-                  </Text>
-                </Group>
-                <Group justify="space-between">
-                  <Text size="sm" c="dimmed">
-                    Final
-                  </Text>
-                  <Text size="sm" fw={600} style={{ fontVariantNumeric: "tabular-nums" }}>
-                    {perf.final_equity.toFixed(2)}
-                  </Text>
-                </Group>
-                <Divider my="xs" />
-                <Text size="xs" c="dimmed">
-                  Equity curve は API から取得可能ですが、現状は描画 UI を未実装です。
-                </Text>
-              </Stack>
+            {positions.length === 0 ? (
+              <Text size="sm" c="dimmed">保有ポジションがありません。</Text>
             ) : (
-              <Text size="sm" c="dimmed">
-                パフォーマンスデータがありません。
-              </Text>
+              <Table striped highlightOnHover>
+                <Table.Thead>
+                  <Table.Tr>
+                    <Table.Th>Ticker</Table.Th>
+                    <Table.Th style={{ textAlign: "right" }}>Qty</Table.Th>
+                    <Table.Th style={{ textAlign: "right" }}>Avg</Table.Th>
+                  </Table.Tr>
+                </Table.Thead>
+                <Table.Tbody>
+                  {positions.map((p) => (
+                    <Table.Tr key={p.id}>
+                      <Table.Td><Text fw={700} size="sm">{p.ticker}</Text></Table.Td>
+                      <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>
+                        <Text size="sm" c={p.qty > 0 ? "teal" : "red"} fw={600}>
+                          {p.qty > 0 ? `+${p.qty}` : p.qty}
+                        </Text>
+                      </Table.Td>
+                      <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>
+                        {p.avg_price.toFixed(2)}
+                      </Table.Td>
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
             )}
           </Card>
         </Grid.Col>
       </Grid>
 
       <Card withBorder>
-        <Text fw={700} mb={4}>
-          Next
+        <Text fw={700} mb="sm">
+          Executions <Text span c="dimmed" size="sm">({sortedExec.length})</Text>
         </Text>
-        <Text size="sm" c="dimmed">
-          グラフ（equity curve / drawdown）や、期間フィルタを追加するとさらに見栄えが良くなります。
-        </Text>
+        <Divider mb="sm" />
+        {sortedExec.length === 0 ? (
+          <Text size="sm" c="dimmed">約定履歴がありません。</Text>
+        ) : (
+          <Table striped highlightOnHover>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Time</Table.Th>
+                <Table.Th>Ticker</Table.Th>
+                <Table.Th>Side</Table.Th>
+                <Table.Th style={{ textAlign: "right" }}>Qty</Table.Th>
+                <Table.Th style={{ textAlign: "right" }}>Price</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {sortedExec.slice(0, 100).map((ex) => (
+                <Table.Tr key={ex.id}>
+                  <Table.Td style={{ whiteSpace: "nowrap", fontSize: 12 }}>
+                    {new Date(ex.executed_at).toLocaleString("ja-JP")}
+                  </Table.Td>
+                  <Table.Td><Text fw={700} size="sm">{ex.ticker}</Text></Table.Td>
+                  <Table.Td><SideBadge side={ex.side} /></Table.Td>
+                  <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>{ex.qty}</Table.Td>
+                  <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>
+                    {ex.price.toFixed(2)}
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        )}
       </Card>
     </Stack>
   );

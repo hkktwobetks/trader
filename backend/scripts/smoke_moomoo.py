@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 _BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_BACKEND / "src"))
 load_dotenv(_BACKEND / ".env")
+load_dotenv(_BACKEND / ".env.local", override=True)
 
 
 def main() -> None:

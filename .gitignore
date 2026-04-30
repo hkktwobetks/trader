@@ -4,22 +4,10 @@
 # Python
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
 *.egg-info/
 *.eggs/
 .venv/
-
-# Node
-node_modules/
-**/node_modules/
-.vite/
-**/.vite/
-dist/
-**/dist/
+.venv.local/
 
 # DB
 *.db
@@ -42,6 +30,28 @@ login_error.png
 .firefox_profile/
 .playwright_profile/
 
+# OpenD / moomoo binaries
+*.tar.gz
+*.dat
+*.dat:*
+opend_data/
+backend/opend_keys/
+backend/.env.local
+backend/opend/*.tar.gz
+backend/opend/FutuOpenD*
+backend/opend/moomoo_OpenD*/
+backend/opend/*.xml
+
+# Frontend build artifacts
+frontend/dist/
+
+# Claude Code project files
+.claude/
+
+# Root-level package files (not part of this project)
+package.json
+package-lock.json
+
 # Scraper cache
 backend/data/
 
@@ -50,3 +60,4 @@ backend/data/
 
 # Lock files (uv)
 uv.lock
+node_modules

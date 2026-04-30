@@ -1,4 +1,6 @@
 services:
+
+  # ── コアサービス ───────────────────────────────────────
   backend:
     build: ./backend
     container_name: trader-backend
@@ -6,14 +8,29 @@ services:
       - "8000:8000"
     env_file:
       - ./backend/.env
+      - ./backend/.env.local
     environment:
       PYTHONPATH: /app/src
       TZ: Asia/Tokyo
-      # SQLite をボリュームに保存（任意で上書き）
       DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/trader.db}
+      MOOMOO_OPEND_HOST: ${MOOMOO_OPEND_HOST:-127.0.0.1}
+      MOOMOO_OPEND_PORT: ${MOOMOO_OPEND_PORT:-11111}
+      MOOMOO_RSA_PRIVATE_KEY_PATH: ${MOOMOO_RSA_PRIVATE_KEY_PATH:-/app/opend_keys/conn_key.pem}
+      COOKIE_STORE_PATH: /app/cookie_data/twitter_cookies.json
     volumes:
       - backend_data:/app/data
+      - ./backend/opend_keys:/app/opend_keys:ro
+      - cookie_data:/app/cookie_data
+      - /home/daiki/dexter:/home/daiki/dexter
+      - opend_home:/mnt/opend_home:ro  # read captcha image from opend
     command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    networks: [trader]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
 
   frontend:
     build: ./frontend
@@ -21,7 +38,102 @@ services:
     ports:
       - "80:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    networks: [trader]
+
+  twitter_worker:
+    build: ./backend
+    container_name: twitter_worker
+    env_file:
+      - ./backend/.env
+      - ./backend/.env.local
+    environment:
+      PYTHONPATH: /app/src
+      TZ: Asia/Tokyo
+      API_BASE_URL: http://backend:8000
+      COOKIE_STORE_PATH: /app/cookie_data/twitter_cookies.json
+    depends_on:
+      backend:
+        condition: service_healthy
+    volumes:
+      - cookie_data:/app/cookie_data
+    command: ["python", "-m", "workers.twitter_poll"]
+    networks: [trader]
+
+  dexter_worker:
+    build: ./backend
+    container_name: dexter_worker
+    env_file:
+      - ./backend/.env
+      - ./backend/.env.local
+    environment:
+      PYTHONPATH: /app/src
+      TZ: Asia/Tokyo
+      API_BASE_URL: http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    volumes:
+      - /home/daiki/dexter:/home/daiki/dexter
+    command: ["python", "-m", "workers.dexter_poll"]
+    networks: [trader]
+
+  sync_worker:
+    build: ./backend
+    container_name: sync_worker
+    env_file:
+      - ./backend/.env
+      - ./backend/.env.local
+    environment:
+      PYTHONPATH: /app/src
+      TZ: Asia/Tokyo
+      API_BASE_URL: http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    volumes:
+      - backend_data:/app/data
+    command: ["python", "-m", "workers.scheduler"]
+    networks: [trader]
+
+  # ── moomoo プロファイル（OpenD ゲートウェイ）─────────────
+  opend:
+    profiles: [moomoo]
+    build:
+      context: .
+      dockerfile: backend/opend/Dockerfile
+    container_name: moomoo-opend
+    depends_on:
+      backend:
+        condition: service_healthy
+    network_mode: "service:backend"
+    env_file:
+      - ./backend/.env
+      - ./backend/.env.local
+    environment:
+      MOOMOO_API_IP: 127.0.0.1
+      MOOMOO_API_PORT: 11111
+      MOOMOO_TELNET_IP: 127.0.0.1
+      MOOMOO_TELNET_PORT: 22222
+      MOOMOO_OPEND_RSA_PRIVATE_KEY_PATH: ${MOOMOO_OPEND_RSA_PRIVATE_KEY_PATH:-/opt/opend/keys/conn_key.pem}
+    volumes:
+      - ./backend/opend_data:/opt/opend/FutuOpenD/Log
+      - ./backend/opend_keys:/opt/opend/keys:ro
+      - opend_home:/root/.com.moomoo.OpenD  # captcha image shared with backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/11111'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 120s
+
+networks:
+  trader:
+    name: trader_net
 
 volumes:
   backend_data:
+  cookie_data:
+  opend_home:

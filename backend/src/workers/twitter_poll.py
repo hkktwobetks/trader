@@ -1,232 +1,238 @@
-import os
-import time
+"""Twitter polling worker — direct GraphQL httpx client."""
+import asyncio
+import json
 import logging
-from typing import Iterable, Dict, Any, List, Set
+import os
 
-import requests
-from twitter.scraper import Scraper  # pip: twitter-api-client
+import httpx
 
+from app.cookie_store import load_cookies
 from app.utils import naive_extract
-from app.cookie_store import load_cookies, get_version, save_cookies
-from workers.twitter_auth_helper import get_twitter_cookies, refresh_cookies, validate_cookies
 
-logging.basicConfig(level=logging.INFO, format='[twitter_worker] %(message)s')
+logging.basicConfig(level=logging.INFO, format="[twitter_worker] %(message)s")
 log = logging.getLogger(__name__)
-
-# cookie_store 経由で読み込み（API / ファイル / 環境変数）
-X_AUTH_TOKEN, X_CT0 = load_cookies()
-if not X_AUTH_TOKEN or not X_CT0:
-    # フォールバック: twitter_auth_helper
-    X_AUTH_TOKEN, X_CT0 = get_twitter_cookies(auto_refresh=True)
-    if X_AUTH_TOKEN and X_CT0:
-        save_cookies(X_AUTH_TOKEN, X_CT0)
 
 POLL_SEC = int(os.getenv("POLL_INTERVAL_SEC", "30"))
 API_BASE = os.getenv("API_BASE_URL", "http://api:8000")
-
+POST_TIMEOUT_SEC = int(os.getenv("TWITTER_POST_TIMEOUT_SEC", "120"))
 USERS = [u.strip() for u in os.getenv("TWITTER_USERS", "").split(",") if u.strip()]
 QUERY = os.getenv("TWITTER_QUERY", "").strip()
 
-scraper: Scraper | None = None
-if X_AUTH_TOKEN and X_CT0:
-    scraper = Scraper(cookies={"auth_token": X_AUTH_TOKEN, "ct0": X_CT0})
-else:
-    log.warning("Cookie 未設定。ダッシュボード /dashboard から設定してください")
+ALERT_HASHTAG = "#デイトレアラート"
+ALERT_KEYWORD = "デイトレアラート"
+
+# エンドポイント ID は Twitter のデプロイで変わることがある → env で上書き可能
+EP_USER_TWEETS = os.getenv("TW_EP_USER_TWEETS", "naBcZ4al-iTCFBYGOAMzBQ")
+EP_USER_BY_SCREENNAME = os.getenv("TW_EP_USER_BY_SCREENNAME", "sLVLhk0bGj3MVFEKTdax1w")
+
+BEARER = (
+    "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs="
+    "1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
+)
+BASE = "https://x.com/i/api/graphql"
+
+TWEET_FEATURES = json.dumps({
+    "rweb_video_screen_enabled": False,
+    "rweb_cashtags_enabled": True,
+    "freedom_of_speech_not_reach_fetch_enabled": True,
+    "standardized_nudges_misinfo": True,
+    "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": True,
+    "longform_notetweets_consumption_enabled": True,
+    "responsive_web_graphql_timeline_navigation_enabled": True,
+    "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
+    "creator_subscriptions_tweet_preview_api_enabled": True,
+    "verified_phone_label_enabled": False,
+    "profile_label_improvements_pcf_label_in_post_enabled": True,
+    "responsive_web_enhance_cards_enabled": False,
+})
 
 
-def resolve_user_ids(usernames: List[str]) -> Dict[str, int]:
-    if not usernames:
-        return {}
-    info = scraper.users(usernames)
-    mapping: Dict[str, int] = {}
-    for item in info:
-        try:
-            result = item["data"]["user"]["result"]
-            legacy = result.get("legacy", {})
-            screen_name = legacy.get("screen_name", "")
-            user_id = int(result.get("rest_id", legacy.get("id_str", 0)))
-            if screen_name and user_id:
-                mapping[screen_name] = user_id
-        except (KeyError, TypeError, ValueError) as e:
-            log.warning(f"Failed to parse user info: {e}")
-    log.info(f"resolved users: {mapping}")
-    return mapping
+def _load_worker_cookies() -> tuple[str, str]:
+    auth_token, ct0 = load_cookies()
+    if auth_token and ct0:
+        return auth_token, ct0
+    return os.getenv("X_AUTH_TOKEN", ""), os.getenv("X_CT0", "")
 
 
-def _parse_tweet_result(tweet_result: Dict) -> Iterable[Dict[str, Any]]:
-    if not tweet_result:
-        return
-    if tweet_result.get("__typename") == "TweetWithVisibilityResults":
-        tweet_result = tweet_result.get("tweet", tweet_result)
-    legacy = tweet_result.get("legacy", {})
-    full_text = legacy.get("full_text", "")
-    if not full_text:
-        return
-    rest_id = tweet_result.get("rest_id", "")
-    core = tweet_result.get("core", {})
-    user_legacy = core.get("user_results", {}).get("result", {}).get("legacy", {})
-    yield {
-        "id": rest_id,
-        "text": full_text,
-        "user_id": int(legacy.get("user_id_str", 0)),
-        "username": user_legacy.get("screen_name", legacy.get("screen_name", "")),
-        "created_at": legacy.get("created_at"),
-        "url": f"https://twitter.com/i/web/status/{rest_id}",
-    }
+def _build_client() -> httpx.AsyncClient:
+    auth_token, ct0 = _load_worker_cookies()
+    return httpx.AsyncClient(
+        cookies={"auth_token": auth_token, "ct0": ct0},
+        headers={
+            "authorization": f"Bearer {BEARER}",
+            "x-csrf-token": ct0,
+            "x-twitter-active-user": "yes",
+            "x-twitter-auth-type": "OAuth2Session",
+            "user-agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+        },
+        follow_redirects=True,
+        timeout=15,
+    )
 
 
-def _extract_tweets_from_timeline(raw: List[Dict]) -> Iterable[Dict[str, Any]]:
-    for item in raw:
-        instructions = []
-        try:
-            instructions = item["data"]["user"]["result"]["timeline_v2"]["timeline"]["instructions"]
-        except (KeyError, TypeError):
-            pass
-        if not instructions:
-            try:
-                instructions = item["data"]["search_by_raw_query"]["search_timeline"]["timeline"]["instructions"]
-            except (KeyError, TypeError):
-                pass
-        if not instructions:
-            legacy = item.get("legacy") or item.get("result", {}).get("legacy", {})
-            if legacy and legacy.get("full_text"):
-                rest_id = item.get("rest_id") or item.get("result", {}).get("rest_id", "")
-                yield {
-                    "id": rest_id,
-                    "text": legacy.get("full_text", ""),
-                    "user_id": int(legacy.get("user_id_str", 0)),
-                    "username": legacy.get("screen_name", ""),
-                    "created_at": legacy.get("created_at"),
-                    "url": f"https://twitter.com/i/web/status/{rest_id}",
-                }
-            continue
-
-        for instr in instructions:
-            entries = instr.get("entries") or []
-            for entry in entries:
-                content = entry.get("content", {})
-                tweet_result = None
-                try:
-                    tweet_result = content["itemContent"]["tweet_results"]["result"]
-                except (KeyError, TypeError):
-                    pass
-                if tweet_result is not None:
-                    yield from _parse_tweet_result(tweet_result)
-                    continue
-                for sub_item in content.get("items", []):
-                    try:
-                        tweet_result = sub_item["item"]["itemContent"]["tweet_results"]["result"]
-                    except (KeyError, TypeError):
-                        continue
-                    yield from _parse_tweet_result(tweet_result)
-
-
-def fetch_user_tweets(user_ids: Iterable[int]) -> Iterable[Dict[str, Any]]:
-    raw = scraper.tweets(list(user_ids))
-    yield from _extract_tweets_from_timeline(raw)
-
-
-def fetch_search(query: str) -> Iterable[Dict[str, Any]]:
-    raw = scraper.search(query)
-    yield from _extract_tweets_from_timeline(raw)
-
-
-def post_signal(text: str, meta: Dict[str, Any]) -> None:
+async def resolve_user_id(client: httpx.AsyncClient, username: str) -> int | None:
+    variables = json.dumps({
+        "screen_name": username,
+        "withSafetyModeUserFields": True,
+    })
+    features = json.dumps({
+        "hidden_profile_likes_enabled": True,
+        "hidden_profile_subscriptions_enabled": True,
+        "responsive_web_graphql_exclude_directive_enabled": True,
+        "verified_phone_label_enabled": False,
+        "creator_subscriptions_tweet_preview_api_enabled": True,
+        "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
+        "responsive_web_graphql_timeline_navigation_enabled": True,
+    })
     try:
-        r = requests.post(
-            f"{API_BASE}/signals",
-            json={"text": text, "source": "twitter", "meta": meta},
-            timeout=5,
+        r = await client.get(
+            f"{BASE}/{EP_USER_BY_SCREENNAME}/UserByScreenName",
+            params={"variables": variables, "features": features},
         )
         r.raise_for_status()
-        log.info(f"-> posted to API: {meta.get('url')}")
+        result = r.json()["data"]["user"]["result"]
+        uid = int(result["rest_id"])
+        log.info("resolved: @%s -> %d (protected=%s)", username, uid, result.get("legacy", {}).get("protected"))
+        return uid
     except Exception as e:
-        log.warning(f"API post failed: {e}")
+        log.warning("user resolve failed for @%s: %s", username, e)
+        return None
 
 
-def _reload_scraper_if_needed() -> bool:
-    """cookie_store に新しい Cookie があれば scraper を再初期化"""
-    global scraper, X_AUTH_TOKEN, X_CT0
-    new_auth, new_ct0 = load_cookies()
-    if not new_auth or not new_ct0:
-        return False
-    if new_auth == X_AUTH_TOKEN and new_ct0 == X_CT0 and scraper is not None:
-        return False  # 変更なし
-    X_AUTH_TOKEN, X_CT0 = new_auth, new_ct0
-    scraper = Scraper(cookies={"auth_token": X_AUTH_TOKEN, "ct0": X_CT0})
-    log.info(f"Scraper を再初期化しました (version={get_version()})")
-    return True
+def _extract_tweet_result(tr: dict) -> dict | None:
+    if tr.get("__typename") == "TweetWithVisibilityResults":
+        tr = tr.get("tweet", tr)
+    legacy = tr.get("legacy", {})
+    tid = tr.get("rest_id", "")
+    text = legacy.get("full_text", "")
+    if not tid or not text:
+        return None
+    user_result = tr.get("core", {}).get("user_results", {}).get("result", {})
+    # screen_name moved to core in newer Twitter API responses
+    username = (
+        user_result.get("core", {}).get("screen_name")
+        or user_result.get("legacy", {}).get("screen_name", "")
+    )
+    return {"id": tid, "text": text, "username": username, "url": f"https://twitter.com/i/web/status/{tid}"}
 
 
-def main() -> None:
-    global scraper, X_AUTH_TOKEN, X_CT0
+def _parse_tweets(data: dict, seen: set) -> list[dict]:
+    user_result = data.get("data", {}).get("user", {}).get("result", {})
+    timeline_root = user_result.get("timeline_v2") or user_result.get("timeline") or {}
+    instructions = timeline_root.get("timeline", {}).get("instructions", [])
 
+    tweets = []
+    for instr in instructions:
+        for entry in instr.get("entries", []):
+            content = entry.get("content", {})
+            # TimelineTimelineItem — single tweet
+            item_content = content.get("itemContent", {})
+            if item_content:
+                tr = item_content.get("tweet_results", {}).get("result")
+                if tr:
+                    tw = _extract_tweet_result(tr)
+                    if tw and tw["id"] not in seen:
+                        seen.add(tw["id"])
+                        tweets.append(tw)
+                continue
+            # TimelineTimelineModule — list of items (e.g. pinned tweets)
+            for sub in content.get("items", []):
+                tr = sub.get("item", {}).get("itemContent", {}).get("tweet_results", {}).get("result")
+                if tr:
+                    tw = _extract_tweet_result(tr)
+                    if tw and tw["id"] not in seen:
+                        seen.add(tw["id"])
+                        tweets.append(tw)
+    return tweets
+
+
+async def fetch_user_tweets(client: httpx.AsyncClient, user_id: int, seen: set) -> list[dict]:
+    variables = json.dumps({
+        "userId": str(user_id),
+        "count": 20,
+        "includePromotedContent": True,
+        "withQuickPromoteEligibilityTweetFields": True,
+        "withVoice": True,
+    })
+    try:
+        r = await client.get(
+            f"{BASE}/{EP_USER_TWEETS}/UserTweets",
+            params={"variables": variables, "features": TWEET_FEATURES},
+        )
+        r.raise_for_status()
+        return _parse_tweets(r.json(), seen)
+    except Exception as e:
+        log.warning("tweet fetch failed user_id=%d: %s", user_id, e)
+        return []
+
+
+def post_signal(text: str, meta: dict) -> None:
+    try:
+        r = httpx.post(
+            f"{API_BASE}/signals",
+            json={"text": text, "source": "twitter", "meta": meta},
+            timeout=POST_TIMEOUT_SEC,
+        )
+        r.raise_for_status()
+        log.info("-> posted: %s", meta.get("url"))
+    except Exception as e:
+        log.warning("API post failed: %s", e)
+
+
+def heartbeat() -> bool:
+    """Notify backend we are alive. Returns True if polling is enabled."""
+    try:
+        r = httpx.post(f"{API_BASE}/workers/twitter/heartbeat", timeout=5)
+        if r.status_code == 200:
+            return bool(r.json().get("enabled", True))
+    except Exception as e:
+        log.debug("heartbeat failed: %s", e)
+    return True  # default to enabled when backend is unreachable
+
+
+def should_forward_tweet(text: str) -> bool:
+    return "$" in text or ALERT_HASHTAG in text or ALERT_KEYWORD in text
+
+
+async def main() -> None:
     if not USERS and not QUERY:
         raise SystemExit("TWITTER_USERS or TWITTER_QUERY must be set in .env")
+    auth_token, ct0 = _load_worker_cookies()
+    if not auth_token or not ct0:
+        raise SystemExit("X_AUTH_TOKEN and X_CT0 must be set")
 
-    seen: Set[str] = set()
-    user_ids: Dict[str, int] = {}
-    consecutive_errors = 0
-    max_errors_before_refresh = 3
+    async with _build_client() as client:
+        user_ids: dict[str, int] = {}
+        for username in USERS:
+            uid = await resolve_user_id(client, username)
+            if uid:
+                user_ids[username] = uid
 
-    while True:
-        # ダッシュボードから Cookie が更新されたかチェック
-        if _reload_scraper_if_needed():
-            user_ids = resolve_user_ids(USERS) if USERS else {}
-            consecutive_errors = 0
+        if USERS and not user_ids:
+            raise SystemExit("Could not resolve any Twitter user IDs")
 
-        if scraper is None:
-            log.info("Cookie 未設定。ダッシュボード /dashboard から設定してください。%ds 後にリトライ...", POLL_SEC)
-            time.sleep(POLL_SEC)
-            continue
+        seen: set[str] = set()
+        log.info("poll loop started: users=%s interval=%ds", list(user_ids.keys()), POLL_SEC)
 
-        if not user_ids and USERS:
-            user_ids = resolve_user_ids(USERS)
-
-        try:
-            items: Iterable[Dict[str, Any]]
-            if user_ids:
-                items = fetch_user_tweets(user_ids.values())
+        while True:
+            enabled = heartbeat()
+            if enabled:
+                for username, uid in user_ids.items():
+                    for tw in await fetch_user_tweets(client, uid, seen):
+                        text = tw["text"]
+                        log.info("[tweet] @%s: %s", tw.get("username", username), text[:80])
+                        if should_forward_tweet(text):
+                            reason = "$ticker" if "$" in text else ALERT_HASHTAG
+                            log.info("  -> forwarding to API (%s)", reason)
+                            post_signal(text, tw)
             else:
-                items = fetch_search(QUERY)
-
-            for tw in items:
-                tid = str(tw["id"])
-                if tid in seen:
-                    continue
-                seen.add(tid)
-
-                text = tw["text"]
-                parsed = naive_extract(text)
-                log.info(f"[tweet] {tw['username']}: {text}")
-                if parsed:
-                    log.info(f"  parsed: {parsed}")
-                    post_signal(text, tw)
-
-            consecutive_errors = 0
-
-        except Exception as e:
-            log.warning(f"loop error: {e}")
-            consecutive_errors += 1
-
-            if consecutive_errors >= max_errors_before_refresh:
-                log.info("エラーが続いています。Cookie を再チェック...")
-                if _reload_scraper_if_needed():
-                    user_ids = resolve_user_ids(USERS) if USERS else {}
-                    consecutive_errors = 0
-                elif refresh_cookies():
-                    X_AUTH_TOKEN, X_CT0 = get_twitter_cookies(auto_refresh=False)
-                    if X_AUTH_TOKEN and X_CT0:
-                        save_cookies(X_AUTH_TOKEN, X_CT0)
-                        scraper = Scraper(cookies={"auth_token": X_AUTH_TOKEN, "ct0": X_CT0})
-                        user_ids = resolve_user_ids(USERS) if USERS else {}
-                        consecutive_errors = 0
-                        log.info("Cookie を更新しました")
-                    else:
-                        log.error("Cookie の更新に失敗")
-
-        time.sleep(POLL_SEC)
+                log.info("polling paused (disabled via API settings)")
+            await asyncio.sleep(POLL_SEC)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

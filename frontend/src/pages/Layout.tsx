@@ -14,13 +14,15 @@ import {
   UnstyledButton,
 } from "@mantine/core";
 import { Link, NavLink as RRNavLink, Outlet, useLocation } from "react-router-dom";
-import { Activity, ChevronLeft, ChevronRight, Cookie, FlaskConical, LayoutDashboard, Sparkles } from "lucide-react";
+import { Activity, Bot, ChevronLeft, ChevronRight, Cookie, FlaskConical, LayoutDashboard, Settings, Sparkles } from "lucide-react";
 
 const NAV_ITEMS = [
   { to: "/", label: "Dashboard", icon: <LayoutDashboard size={18} /> },
   { to: "/signals", label: "Signals", icon: <Sparkles size={18} /> },
   { to: "/performance", label: "Performance", icon: <Activity size={18} /> },
   { to: "/backtest", label: "Backtest", icon: <FlaskConical size={18} /> },
+  { to: "/dexter", label: "Dexter", icon: <Bot size={18} /> },
+  { to: "/settings", label: "Settings", icon: <Settings size={18} /> },
   { to: "/twitter-cookies", label: "Twitter Cookies", icon: <Cookie size={18} /> },
 ];
 

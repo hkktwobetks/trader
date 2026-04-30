@@ -28,8 +28,19 @@ class Settings(BaseModel):
 
     broker: str = os.getenv("BROKER", "paper")  # paper or moomoo
     broker_env: str = os.getenv("BROKER_ENV", "SIMULATE")  # SIMULATE or REAL
+    twitter_broker_env: str = os.getenv("TWITTER_BROKER_ENV", "REAL")
+    dexter_broker_env: str = os.getenv("DEXTER_BROKER_ENV", "SIMULATE")
+    twitter_polling_enabled: bool = os.getenv("TWITTER_POLLING_ENABLED", "true").lower() == "true"
+    twitter_auto_trade_enabled: bool = os.getenv("TWITTER_AUTO_TRADE_ENABLED", "true").lower() == "true"
+    dexter_auto_trade_enabled: bool = os.getenv("DEXTER_AUTO_TRADE_ENABLED", "false").lower() == "true"
     moomoo_opend_host: str = os.getenv("MOOMOO_OPEND_HOST", "127.0.0.1")
     moomoo_opend_port: int = int(os.getenv("MOOMOO_OPEND_PORT", "11111"))
+    moomoo_login_region: str = os.getenv("MOOMOO_LOGIN_REGION", "")
+    moomoo_security_firm: str = os.getenv("MOOMOO_SECURITY_FIRM", "auto")
+    moomoo_preferred_acc_type: str = os.getenv("MOOMOO_PREFERRED_ACC_TYPE", "auto")
+    moomoo_rsa_private_key_path: str = os.getenv("MOOMOO_RSA_PRIVATE_KEY_PATH", "")
+    moomoo_trade_password: str = os.getenv("MOOMOO_TRADE_PASSWORD", "")
+    moomoo_trade_password_md5: str = os.getenv("MOOMOO_TRADE_PASSWORD_MD5", "")
     moomoo_acc_id: Optional[int] = int(_moomoo_acc_raw) if _moomoo_acc_raw else None
 
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./trader.db")

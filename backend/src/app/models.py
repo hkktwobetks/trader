@@ -21,6 +21,8 @@ class Signal(SQLModel, table=True):
 class Order(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     broker: str
+    broker_env: str = "SIMULATE"
+    order_id: str | None = None
     ticker: str
     side: str # BUY/SELL
     qty: float
@@ -36,6 +38,7 @@ class Position(SQLModel, table=True):
     ticker: str
     qty: float # + long / - short（紙取引用の簡易モデル）
     avg_price: float
+    broker_env: str = Field(default="SIMULATE")
 
 
 class Execution(SQLModel, table=True):
@@ -45,6 +48,7 @@ class Execution(SQLModel, table=True):
     side: str
     qty: float
     price: float
+    broker_env: str = Field(default="SIMULATE")
     executed_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -53,6 +57,7 @@ class PnL(SQLModel, table=True):
     date: str # YYYY-MM-DD
     realized: float = 0.0
     unrealized: float = 0.0
+    broker_env: str = Field(default="SIMULATE")
 
 
 class MarketBar(SQLModel, table=True):
