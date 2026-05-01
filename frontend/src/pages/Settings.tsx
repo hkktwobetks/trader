@@ -33,7 +33,9 @@ type TradingSettings = {
 
 type OpendStatus = {
   connected: boolean;
+  verify_type: "captcha" | "sms" | null;
   captcha_pending: boolean;
+  sms_pending: boolean;
   captcha_path: string | null;
 };
 
@@ -124,50 +126,128 @@ function AutoTradeToggle({
   );
 }
 
+function VerifyForm({
+  verifyType,
+  onSubmit,
+  submitting,
+  message,
+  captchaImg,
+}: {
+  verifyType: "captcha" | "sms";
+  onSubmit: (code: string, type: "captcha" | "sms") => void;
+  submitting: boolean;
+  message: { ok: boolean; text: string } | null;
+  captchaImg: string | null;
+}) {
+  const [code, setCode] = useState("");
+
+  const handleSubmit = () => {
+    if (!code.trim()) return;
+    onSubmit(code.trim(), verifyType);
+    setCode("");
+  };
+
+  return (
+    <Stack gap="sm">
+      <Alert color={verifyType === "sms" ? "blue" : "yellow"} variant="light">
+        <Text size="sm" fw={600}>
+          {verifyType === "sms" ? "SMS認証コードが必要です" : "キャプチャ認証が必要です"}
+        </Text>
+        <Text size="xs" mt={2}>
+          {verifyType === "sms"
+            ? "登録された電話番号にSMSが送信されました。届いたコードを入力してください。"
+            : "画像のコードを入力して送信してください。時間切れで再起動した場合は新しい画像が自動表示されます。"}
+        </Text>
+      </Alert>
+      {verifyType === "captcha" && captchaImg && (
+        <Image src={captchaImg} alt="captcha" w={200} radius="sm" style={{ imageRendering: "pixelated" }} />
+      )}
+      <Group gap="sm" align="flex-end">
+        <TextInput
+          label={verifyType === "sms" ? "SMSコード" : "認証コード"}
+          placeholder={verifyType === "sms" ? "例: 123456" : "例: AB12"}
+          value={code}
+          onChange={(e) => setCode(e.currentTarget.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(); }}
+          size="sm"
+          style={{ flex: 1 }}
+          autoFocus
+        />
+        <Button size="sm" onClick={handleSubmit} loading={submitting} disabled={!code.trim()}>
+          送信
+        </Button>
+      </Group>
+      {message && (
+        <Text size="xs" c={message.ok ? "teal" : "red"}>{message.text}</Text>
+      )}
+    </Stack>
+  );
+}
+
 function OpendCard() {
   const [status, setStatus] = useState<OpendStatus | null>(null);
   const [captchaImg, setCaptchaImg] = useState<string | null>(null);
-  const [code, setCode] = useState("");
+  const [restarting, setRestarting] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadStatus = async () => {
     try {
       const r = await fetch(`${API}/opend/status`);
-      if (r.ok) {
-        const s = (await r.json()) as OpendStatus;
-        setStatus(s);
-        if (s.captcha_pending) {
-          const ir = await fetch(`${API}/opend/captcha-image`);
-          if (ir.ok) setCaptchaImg(((await ir.json()) as { image: string }).image);
-        } else {
-          setCaptchaImg(null);
+      if (!r.ok) return;
+      const s = (await r.json()) as OpendStatus;
+      setStatus(s);
+      if (s.captcha_pending) {
+        const ir = await fetch(`${API}/opend/captcha-image`);
+        if (ir.ok) {
+          const newImg = ((await ir.json()) as { image: string }).image;
+          setCaptchaImg((prev) => {
+            if (prev !== newImg) setRestarting(false);
+            return newImg;
+          });
         }
+      } else {
+        setCaptchaImg(null);
+        if (s.connected || !s.sms_pending) setRestarting(false);
       }
     } catch { /* silent */ }
   };
 
+  const startPolling = (fast: boolean) => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = setInterval(loadStatus, fast ? 3_000 : 15_000);
+  };
+
   useEffect(() => {
     loadStatus();
-    const t = setInterval(loadStatus, 15_000);
-    return () => clearInterval(t);
+    startPolling(false);
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, []);
 
-  const submit = async () => {
-    if (!code.trim()) return;
+  useEffect(() => {
+    const needFast = status?.captcha_pending || status?.sms_pending || restarting;
+    startPolling(needFast ? true : false);
+  }, [status?.captcha_pending, status?.sms_pending, restarting]);
+
+  const submit = async (code: string, verifyType: "captcha" | "sms") => {
     setSubmitting(true);
     setMessage(null);
     try {
       const r = await fetch(`${API}/opend/submit-captcha`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: code.trim() }),
+        body: JSON.stringify({ code, verify_type: verifyType }),
       });
       const data = await r.json();
       if (r.ok) {
-        setMessage({ ok: true, text: `送信完了: ${data.response || "OK"}` });
-        setCode("");
-        setTimeout(loadStatus, 2000);
+        setMessage({ ok: true, text: "送信しました。結果を確認中…" });
+        startPolling(true);
+        setTimeout(loadStatus, 1500);
+      } else if (typeof data.detail === "string" && data.detail.startsWith("restarting:")) {
+        setRestarting(true);
+        setMessage({ ok: false, text: "OpenDが再起動中です。しばらくお待ちください…" });
+        startPolling(true);
       } else {
         setMessage({ ok: false, text: data.detail ?? "エラー" });
       }
@@ -178,12 +258,16 @@ function OpendCard() {
     }
   };
 
+  const verifyType = status?.verify_type ?? null;
+
   return (
     <Card withBorder>
       <Group justify="space-between" mb="sm">
         <Text fw={700}>Moomoo OpenD</Text>
         <Group gap="xs">
-          {status ? (
+          {restarting ? (
+            <Badge color="orange" variant="dot" size="sm">RESTARTING</Badge>
+          ) : status ? (
             <Badge color={status.connected ? "teal" : "red"} variant="dot" size="sm">
               {status.connected ? "CONNECTED" : "DISCONNECTED"}
             </Badge>
@@ -197,33 +281,22 @@ function OpendCard() {
       </Group>
       <Divider mb="md" />
 
-      {status?.captcha_pending ? (
+      {restarting ? (
         <Stack gap="sm">
-          <Alert color="yellow" variant="light">
-            <Text size="sm" fw={600}>キャプチャ認証が必要です</Text>
-            <Text size="xs" mt={2}>ログイン時に画像認証が要求されています。コードを入力して送信してください。</Text>
+          <Alert color="orange" variant="light">
+            <Text size="sm" fw={600}>OpenDが再起動中です</Text>
+            <Text size="xs" mt={2}>認証コードの入力待ち画面が自動的に表示されます。</Text>
           </Alert>
-          {captchaImg && (
-            <Image src={captchaImg} alt="captcha" w={200} radius="sm" />
-          )}
-          <Group gap="sm" align="flex-end">
-            <TextInput
-              label="認証コード"
-              placeholder="例: AB12"
-              value={code}
-              onChange={(e) => setCode(e.currentTarget.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
-              size="sm"
-              style={{ flex: 1 }}
-            />
-            <Button size="sm" onClick={submit} loading={submitting} disabled={!code.trim()}>
-              送信
-            </Button>
-          </Group>
-          {message && (
-            <Text size="xs" c={message.ok ? "teal" : "red"}>{message.text}</Text>
-          )}
+          <Loader size="xs" />
         </Stack>
+      ) : verifyType === "captcha" || verifyType === "sms" ? (
+        <VerifyForm
+          verifyType={verifyType}
+          onSubmit={submit}
+          submitting={submitting}
+          message={message}
+          captchaImg={captchaImg}
+        />
       ) : (
         <Text size="sm" c={status?.connected ? "teal" : "dimmed"}>
           {status?.connected

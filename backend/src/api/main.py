@@ -2,7 +2,6 @@ import base64
 import datetime
 import hashlib
 import logging
-import socket as _socket
 from pathlib import Path
 from typing import Iterable, List
 
@@ -215,13 +214,14 @@ _OPEND_HOME = Path("/mnt/opend_home")
 _OPEND_TELNET_HOST = "127.0.0.1"
 
 
-def _opend_telnet_port() -> int:
-    import os
-    return int(os.getenv("MOOMOO_TELNET_PORT", "22222"))
-
-
 def _opend_api_port() -> int:
     return settings.moomoo_opend_port
+
+
+_OPEND_CONTAINER_NAME = "moomoo-opend"
+
+# Verification state detected from container logs (set by _update_opend_verify_state)
+_opend_verify_state: dict = {"type": None, "updated_at": None}  # type: "captcha"|"sms"|None
 
 
 def _find_captcha_image() -> Path | None:
@@ -232,14 +232,48 @@ def _find_captcha_image() -> Path | None:
     return None
 
 
+def _opend_verify_type(connected: bool) -> str | None:
+    """Detect what verification OpenD is waiting for by checking recent container logs."""
+    if connected:
+        return None
+    try:
+        import docker as _docker
+        client = _docker.from_env()
+        container = client.containers.get(_OPEND_CONTAINER_NAME)
+        container.reload()
+        if container.status != "running":
+            return None
+        # Last 50 lines of logs is enough to detect current state
+        logs = container.logs(tail=50).decode(errors="replace")
+        if "SMS verification code required" in logs or "req_phone_verify_code" in logs:
+            # Only SMS-pending if no login success after the last SMS request
+            lines = logs.splitlines()
+            sms_idx = max((i for i, l in enumerate(lines) if "req_phone_verify_code" in l), default=-1)
+            login_idx = max((i for i, l in enumerate(lines) if "Login successful" in l), default=-1)
+            if sms_idx > login_idx:
+                return "sms"
+        if _find_captcha_image() is not None:
+            lines = logs.splitlines()
+            cap_idx = max((i for i, l in enumerate(lines) if "PicVerifyCode" in l), default=-1)
+            login_idx = max((i for i, l in enumerate(lines) if "Login successful" in l), default=-1)
+            if cap_idx > login_idx:
+                return "captcha"
+    except Exception:
+        pass
+    return None
+
+
 @app.get("/opend/status")
 def opend_status():
     from broker import _is_host_reachable
     connected = _is_host_reachable(_OPEND_TELNET_HOST, _opend_api_port(), timeout=1.0)
-    captcha = _find_captcha_image()
+    verify = _opend_verify_type(connected)
+    captcha = _find_captcha_image() if verify == "captcha" else None
     return {
         "connected": connected,
-        "captcha_pending": captcha is not None,
+        "verify_type": verify,          # "captcha" | "sms" | null
+        "captcha_pending": verify == "captcha",
+        "sms_pending": verify == "sms",
         "captcha_path": str(captcha) if captcha else None,
     }
 
@@ -255,6 +289,27 @@ def opend_captcha_image():
 
 class CaptchaSubmit(BaseModel):
     code: str
+    verify_type: str = "captcha"  # "captcha" | "sms"
+
+
+def _opend_exec(cmd: str) -> str:
+    import docker as _docker
+    client = _docker.from_env()
+    try:
+        container = client.containers.get(_OPEND_CONTAINER_NAME)
+    except _docker.errors.NotFound:
+        raise HTTPException(
+            status_code=503,
+            detail="OpenDコンテナが見つかりません。docker compose --profile moomoo up -d opend で起動してください。",
+        )
+    container.reload()
+    if container.status != "running":
+        raise HTTPException(status_code=503, detail=f"restarting:{container.status}")
+    result = container.exec_run(
+        ["bash", "-c", f"printf '{cmd}\\n' > /tmp/opend_input"],
+        user="root",
+    )
+    return (result.output or b"").decode(errors="replace").strip()
 
 
 @app.post("/opend/submit-captcha")
@@ -262,16 +317,16 @@ def opend_submit_captcha(payload: CaptchaSubmit):
     code = payload.code.strip()
     if not code:
         raise HTTPException(status_code=422, detail="code is required")
-    port = _opend_telnet_port()
     try:
-        with _socket.create_connection((_OPEND_TELNET_HOST, port), timeout=5) as sock:
-            sock.sendall(f"input_pic_verify_code -code={code}\n".encode())
-            import time as _time
-            _time.sleep(0.8)
-            response = sock.recv(4096).decode(errors="replace").strip()
-        return {"ok": True, "response": response}
-    except OSError as e:
-        raise HTTPException(status_code=503, detail=f"OpenD telnet ({port}) に接続できません: {e}")
+        if payload.verify_type == "sms":
+            _opend_exec(f"input_phone_verify_code -code={code}")
+        else:
+            _opend_exec(f"input_pic_verify_code -code={code}")
+        return {"ok": True, "response": "送信しました。OpenD のログで結果を確認してください。"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"docker exec 失敗: {e}")
 
 
 # ── Worker Status ──────────────────────────────────

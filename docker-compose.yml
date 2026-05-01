@@ -23,6 +23,7 @@ services:
       - cookie_data:/app/cookie_data
       - /home/daiki/dexter:/home/daiki/dexter
       - opend_home:/mnt/opend_home:ro  # read captcha image from opend
+      - /var/run/docker.sock:/var/run/docker.sock:ro  # docker exec for captcha submission
     command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
     networks: [trader]
     healthcheck:
