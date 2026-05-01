@@ -1,6 +1,7 @@
 import base64
 import datetime
 import hashlib
+import json
 import logging
 from pathlib import Path
 from typing import Iterable, List
@@ -27,6 +28,30 @@ logger = logging.getLogger("api")
 # Runtime overrides — take precedence over env-var defaults from settings
 _rt: dict[str, object] = {}
 
+_RT_FILE = Path(settings.database_url.replace("sqlite:///", "")).parent / "settings_rt.json"
+_RT_KEYS = frozenset({
+    "broker_env", "twitter_broker_env", "dexter_broker_env",
+    "auto_trade_enabled", "twitter_polling_enabled",
+    "twitter_auto_trade_enabled", "dexter_auto_trade_enabled",
+})
+
+
+def _load_rt() -> None:
+    try:
+        if _RT_FILE.exists():
+            data = json.loads(_RT_FILE.read_text())
+            _rt.update({k: v for k, v in data.items() if k in _RT_KEYS})
+    except Exception:
+        pass
+
+
+def _save_rt() -> None:
+    try:
+        _RT_FILE.write_text(json.dumps({k: _rt[k] for k in _RT_KEYS if k in _rt}))
+    except Exception:
+        pass
+
+
 # Worker heartbeat timestamps (UTC)
 _worker_last_seen: dict[str, datetime.datetime] = {}
 
@@ -41,6 +66,7 @@ app = FastAPI(title="Discord-LLM-Trader")
 @app.on_event("startup")
 def on_startup():
     init_db()
+    _load_rt()
     logger.setLevel(logging.INFO)
 
 
@@ -205,6 +231,7 @@ def patch_trading_settings(payload: TradingSettingsPatch):
         val = getattr(payload, bool_key)
         if val is not None:
             _rt[bool_key] = val
+    _save_rt()
     return _build_trading_settings()
 
 
