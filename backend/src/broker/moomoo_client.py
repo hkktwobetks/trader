@@ -77,8 +77,8 @@ _CANCELABLE_STATUSES = [
 ]
 
 _ACCOUNT_TYPE_PRIORITY: Dict[str, int] = {
-    "CASH": 0,
-    "MARGIN": 1,
+    "MARGIN": 0,
+    "CASH": 1,
     "DERIVATIVES": 2,
 }
 
