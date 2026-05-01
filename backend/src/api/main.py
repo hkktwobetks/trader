@@ -449,10 +449,12 @@ def list_orders(broker_env: str | None = Query(default=None)):
 
 
 @app.get("/positions")
-def list_positions(broker_env: str | None = Query(default=None)):
+def list_positions(broker_env: str | None = Query(default=None), acc_type: str | None = Query(default=None)):
     env = (broker_env or str(_get("broker_env"))).upper()
     with get_session() as s:
         rows = sync_positions(s, broker_env=env)
+        if acc_type:
+            rows = [r for r in rows if r.acc_type.upper() == acc_type.upper()]
         return jsonable_encoder(rows)
 
 

@@ -91,7 +91,12 @@ def sync_positions(session: Session, broker_name: str | None = None, broker_env:
     resolved_env = (broker_env or _primary_sync_env()).upper()
     try:
         broker = get_broker(broker_name=resolved_name, broker_env=resolved_env)
-        live_positions = broker.positions()
+        # Use per-account-type fetch when available (moomoo); fall back to single-account
+        fetch_by_type = getattr(broker, "positions_by_type", None)
+        if callable(fetch_by_type):
+            positions_map = fetch_by_type()  # {acc_type: {ticker: {qty, avg_price}}}
+        else:
+            positions_map = {"MARGIN": broker.positions()}
     except Exception as exc:
         log.warning("position sync skipped env=%s: %s", resolved_env, exc)
         return session.exec(
@@ -99,19 +104,20 @@ def sync_positions(session: Session, broker_name: str | None = None, broker_env:
         ).all()
 
     session.exec(delete(Position).where(Position.broker_env == resolved_env))
-    for ticker, data in live_positions.items():
-        session.add(
-            Position(
-                ticker=ticker,
-                qty=float(data.get("qty", 0.0)),
-                avg_price=float(data.get("avg_price", 0.0)),
-                broker_env=resolved_env,
+    for acc_type, positions in positions_map.items():
+        for ticker, data in positions.items():
+            session.add(
+                Position(
+                    ticker=ticker,
+                    qty=float(data.get("qty", 0.0)),
+                    avg_price=float(data.get("avg_price", 0.0)),
+                    broker_env=resolved_env,
+                    acc_type=acc_type,
+                )
             )
-        )
 
     session.commit()
-    rows = session.exec(select(Position).where(Position.broker_env == resolved_env).order_by(Position.ticker.asc())).all()
-    return rows
+    return session.exec(select(Position).where(Position.broker_env == resolved_env).order_by(Position.ticker.asc())).all()
 
 
 def sync_pnl(session: Session, broker_name: str | None = None, broker_env: str | None = None) -> list[PnL]:

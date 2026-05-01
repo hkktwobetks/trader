@@ -47,6 +47,7 @@ type PositionRow = {
   ticker: string;
   qty: number;
   avg_price: number;
+  acc_type: string;
 };
 
 function SideBadge({ side }: { side: string }) {
@@ -70,7 +71,8 @@ function EnvBadge({ env }: { env: string }) {
 }
 
 export function SignalsPage() {
-  const [env, setEnv] = useState<"SIMULATE" | "REAL">("SIMULATE");
+  const [env, setEnv] = useState<"SIMULATE" | "REAL">("REAL");
+  const [accType, setAccType] = useState<"ALL" | "MARGIN" | "CASH">("ALL");
   const [signals, setSignals] = useState<SignalRow[]>([]);
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [positions, setPositions] = useState<PositionRow[]>([]);
@@ -78,13 +80,14 @@ export function SignalsPage() {
   const [query, setQuery] = useState("");
   const [minConf, setMinConf] = useState<number | "">("");
 
-  const fetchAll = async (e = env) => {
+  const fetchAll = async (e = env, at = accType) => {
     setRefreshing(true);
     try {
+      const accParam = at !== "ALL" ? `&acc_type=${at}` : "";
       const [sigRes, ordRes, posRes] = await Promise.all([
         fetch(`${API}/signals`),
         fetch(`${API}/orders?broker_env=${e}`),
-        fetch(`${API}/positions?broker_env=${e}`),
+        fetch(`${API}/positions?broker_env=${e}${accParam}`),
       ]);
       if (sigRes.ok) setSignals((await sigRes.json()) as SignalRow[]);
       if (ordRes.ok) setOrders((await ordRes.json()) as OrderRow[]);
@@ -97,10 +100,16 @@ export function SignalsPage() {
   const handleEnvChange = (v: string) => {
     const next = v as "SIMULATE" | "REAL";
     setEnv(next);
-    fetchAll(next);
+    fetchAll(next, accType);
   };
 
-  useEffect(() => { fetchAll(env); }, []);
+  const handleAccTypeChange = (v: string) => {
+    const next = v as "ALL" | "MARGIN" | "CASH";
+    setAccType(next);
+    fetchAll(env, next);
+  };
+
+  useEffect(() => { fetchAll(env, accType); }, []);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -240,9 +249,21 @@ export function SignalsPage() {
         {/* ポジション */}
         <Grid.Col span={{ base: 12, md: 4 }}>
           <Card withBorder h="100%">
-            <Text fw={700} mb="sm">
-              Positions <Text span c="dimmed" size="sm">({positions.length})</Text>
-            </Text>
+            <Group justify="space-between" mb="sm">
+              <Text fw={700}>
+                Positions <Text span c="dimmed" size="sm">({positions.length})</Text>
+              </Text>
+              <SegmentedControl
+                size="xs"
+                value={accType}
+                onChange={handleAccTypeChange}
+                data={[
+                  { value: "ALL", label: "ALL" },
+                  { value: "MARGIN", label: "MARGIN" },
+                  { value: "CASH", label: "CASH" },
+                ]}
+              />
+            </Group>
             <Divider mb="sm" />
             {positions.length === 0 ? (
               <Text size="sm" c="dimmed">ポジションがありません。</Text>
@@ -253,6 +274,7 @@ export function SignalsPage() {
                     <Table.Th>Ticker</Table.Th>
                     <Table.Th style={{ textAlign: "right" }}>Qty</Table.Th>
                     <Table.Th style={{ textAlign: "right" }}>Avg</Table.Th>
+                    {accType === "ALL" && <Table.Th>Type</Table.Th>}
                   </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>
@@ -265,6 +287,13 @@ export function SignalsPage() {
                       <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>
                         {p.avg_price.toFixed(2)}
                       </Table.Td>
+                      {accType === "ALL" && (
+                        <Table.Td>
+                          <Badge size="xs" variant="outline" color={p.acc_type === "MARGIN" ? "blue" : "gray"}>
+                            {p.acc_type}
+                          </Badge>
+                        </Table.Td>
+                      )}
                     </Table.Tr>
                   ))}
                 </Table.Tbody>

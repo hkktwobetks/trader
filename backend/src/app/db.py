@@ -35,6 +35,7 @@ def _migrate_env_columns() -> None:
     for table, col, default in [
         ("execution", "broker_env", "SIMULATE"),
         ("position", "broker_env", "SIMULATE"),
+        ("position", "acc_type", "MARGIN"),
         ("pnl", "broker_env", "SIMULATE"),
     ]:
         try:

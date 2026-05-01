@@ -475,6 +475,37 @@ class MoomooBroker(Broker):
         log.debug("Fetched %d positions from Moomoo", len(positions))
         return positions
 
+    def positions_by_type(self) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        """Return {acc_type: {ticker: {qty, avg_price}}} for all queryable accounts."""
+        ret, acc_df = self._ctx.get_acc_list()
+        if ret != RET_OK or acc_df.empty:
+            return {}
+        target_env = str(self._trd_env).upper()
+        if "trd_env" in acc_df.columns:
+            acc_df = acc_df[acc_df["trd_env"].astype(str).str.upper() == target_env]
+        result: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for _, row in acc_df.iterrows():
+            acc_id = int(row.get("acc_id", 0))
+            acc_type = str(row.get("acc_type", "UNKNOWN")).upper()
+            if acc_type == "DERIVATIVES":
+                continue  # requires extra parameters not supported here
+            ret2, pos_df = self._ctx.position_list_query(trd_env=self._trd_env, acc_id=acc_id)
+            if ret2 != RET_OK or not hasattr(pos_df, "iterrows") or pos_df.empty:
+                continue
+            positions: Dict[str, Dict[str, Any]] = {}
+            for _, prow in pos_df.iterrows():
+                code = str(prow.get("code", ""))
+                ticker = self._strip_symbol(code)
+                if not ticker:
+                    continue
+                positions[ticker] = {
+                    "qty": float(prow.get("qty", 0.0)),
+                    "avg_price": float(prow.get("cost_price", 0.0)),
+                }
+            result[acc_type] = positions
+            log.debug("Fetched %d positions for acc_type=%s acc_id=%s", len(positions), acc_type, acc_id)
+        return result
+
     def quote_last_price(self, ticker: str) -> float:
         code = self._normalise_symbol(ticker)
         quote_ctx: OpenQuoteContext | None = None

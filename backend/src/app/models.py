@@ -39,6 +39,7 @@ class Position(SQLModel, table=True):
     qty: float # + long / - short（紙取引用の簡易モデル）
     avg_price: float
     broker_env: str = Field(default="SIMULATE")
+    acc_type: str = Field(default="MARGIN")
 
 
 class Execution(SQLModel, table=True):
