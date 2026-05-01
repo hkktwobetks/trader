@@ -41,6 +41,7 @@ type PositionRow = {
   ticker: string;
   qty: number;
   avg_price: number;
+  acc_type: string;
 };
 
 function PnlText({ value }: { value: number }) {
@@ -107,19 +108,21 @@ function StatCard({
 }
 
 export function PerformancePage() {
-  const [env, setEnv] = useState<"SIMULATE" | "REAL">("SIMULATE");
+  const [env, setEnv] = useState<"SIMULATE" | "REAL">("REAL");
+  const [accType, setAccType] = useState<"ALL" | "MARGIN" | "CASH">("ALL");
   const [pnl, setPnl] = useState<PnlRow[]>([]);
   const [executions, setExecutions] = useState<ExecutionRow[]>([]);
   const [positions, setPositions] = useState<PositionRow[]>([]);
   const [refreshing, setRefreshing] = useState(false);
 
-  const fetchAll = async (e = env) => {
+  const fetchAll = async (e = env, at = accType) => {
     setRefreshing(true);
     try {
+      const accParam = at !== "ALL" ? `&acc_type=${at}` : "";
       const [pnlRes, exRes, posRes] = await Promise.all([
         fetch(`${API}/pnl?broker_env=${e}`),
         fetch(`${API}/executions?broker_env=${e}`),
-        fetch(`${API}/positions?broker_env=${e}`),
+        fetch(`${API}/positions?broker_env=${e}${accParam}`),
       ]);
       if (pnlRes.ok) setPnl((await pnlRes.json()) as PnlRow[]);
       if (exRes.ok) setExecutions((await exRes.json()) as ExecutionRow[]);
@@ -132,10 +135,16 @@ export function PerformancePage() {
   const handleEnvChange = (v: string) => {
     const next = v as "SIMULATE" | "REAL";
     setEnv(next);
-    fetchAll(next);
+    fetchAll(next, accType);
   };
 
-  useEffect(() => { fetchAll(env); }, []);
+  const handleAccTypeChange = (v: string) => {
+    const next = v as "ALL" | "MARGIN" | "CASH";
+    setAccType(next);
+    fetchAll(env, next);
+  };
+
+  useEffect(() => { fetchAll(env, accType); }, []);
 
   const stats = useMemo(() => {
     const totalRealized = pnl.reduce((s, r) => s + r.realized, 0);
@@ -236,9 +245,21 @@ export function PerformancePage() {
 
         <Grid.Col span={{ base: 12, md: 5 }}>
           <Card withBorder h="100%">
-            <Text fw={700} mb="sm">
-              Positions <Text span c="dimmed" size="sm">({positions.length})</Text>
-            </Text>
+            <Group justify="space-between" mb="sm">
+              <Text fw={700}>
+                Positions <Text span c="dimmed" size="sm">({positions.length})</Text>
+              </Text>
+              <SegmentedControl
+                size="xs"
+                value={accType}
+                onChange={handleAccTypeChange}
+                data={[
+                  { value: "ALL", label: "ALL" },
+                  { value: "MARGIN", label: "MARGIN" },
+                  { value: "CASH", label: "CASH" },
+                ]}
+              />
+            </Group>
             <Divider mb="sm" />
             {positions.length === 0 ? (
               <Text size="sm" c="dimmed">保有ポジションがありません。</Text>
@@ -249,6 +270,7 @@ export function PerformancePage() {
                     <Table.Th>Ticker</Table.Th>
                     <Table.Th style={{ textAlign: "right" }}>Qty</Table.Th>
                     <Table.Th style={{ textAlign: "right" }}>Avg</Table.Th>
+                    {accType === "ALL" && <Table.Th>Type</Table.Th>}
                   </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>
@@ -263,6 +285,13 @@ export function PerformancePage() {
                       <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>
                         {p.avg_price.toFixed(2)}
                       </Table.Td>
+                      {accType === "ALL" && (
+                        <Table.Td>
+                          <Badge size="xs" variant="outline" color={p.acc_type === "MARGIN" ? "blue" : "gray"}>
+                            {p.acc_type}
+                          </Badge>
+                        </Table.Td>
+                      )}
                     </Table.Tr>
                   ))}
                 </Table.Tbody>
