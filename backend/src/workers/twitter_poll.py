@@ -20,6 +20,8 @@ QUERY = os.getenv("TWITTER_QUERY", "").strip()
 
 ALERT_HASHTAG = "#デイトレアラート"
 ALERT_KEYWORD = "デイトレアラート"
+SWING_HASHTAG = "#スイングアラート"
+SWING_KEYWORD = "スイングアラート"
 
 # エンドポイント ID は Twitter のデプロイで変わることがある → env で上書き可能
 EP_USER_TWEETS = os.getenv("TW_EP_USER_TWEETS", "naBcZ4al-iTCFBYGOAMzBQ")
@@ -195,7 +197,13 @@ def heartbeat() -> bool:
 
 
 def should_forward_tweet(text: str) -> bool:
-    return "$" in text or ALERT_HASHTAG in text or ALERT_KEYWORD in text
+    return (
+        "$" in text
+        or ALERT_HASHTAG in text
+        or ALERT_KEYWORD in text
+        or SWING_HASHTAG in text
+        or SWING_KEYWORD in text
+    )
 
 
 async def main() -> None:
@@ -226,7 +234,12 @@ async def main() -> None:
                         text = tw["text"]
                         log.info("[tweet] @%s: %s", tw.get("username", username), text[:80])
                         if should_forward_tweet(text):
-                            reason = "$ticker" if "$" in text else ALERT_HASHTAG
+                            if "$" in text:
+                                reason = "$ticker"
+                            elif SWING_HASHTAG in text or SWING_KEYWORD in text:
+                                reason = SWING_KEYWORD
+                            else:
+                                reason = ALERT_KEYWORD
                             log.info("  -> forwarding to API (%s)", reason)
                             post_signal(text, tw)
             else:
