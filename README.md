@@ -5,23 +5,23 @@ Twitter の投稿を LLM で解析し、moomoo 証券（OpenD）へ自動発注�
 
 ---
 
-## データフロー
+## アーキテクチャ
 
 ```
 Twitter（httpx + GraphQL）
-        │  $TICKER を含むツイート
+        │  アラートツイートを検出
         ▼
 twitter_worker（workers/twitter_poll.py）
-        │  POST /signals  {text, source:"twitter", meta:{url, username, id}}
+        │  POST /signals  {text, source:"twitter", meta}
+        │  LINE Push 通知（新規アラート）
         ▼
 FastAPI（api/main.py）
-        │  1. LLM（Groq / Ollama）でティッカー・方向・信頼度を抽出
+        │  1. LLM でティッカー・売買方向・エントリー・SL/TP・信頼度を抽出
         │  2. 重複チェック（message_id / URL）
-        │  3. Signal を DB に保存
-        │  4. 信頼度 ≥ MIN_CONFIDENCE かつ AUTO_TRADE_ENABLED なら
-        │     リスクチェック → 発注
+        │  3. Signal を PostgreSQL に保存
+        │  4. AUTO_TRADE_ENABLED かつ信頼度 ≥ MIN_CONFIDENCE なら発注
         ▼
-moomoo OpenD（ローカルゲートウェイ）
+moomoo OpenD（Docker コンテナ）
         │  REAL / SIMULATE アカウントへ注文送信
         ▼
 moomoo 証券
@@ -29,12 +29,9 @@ moomoo 証券
 ────── 状態同期（別経路）──────
 
 sync_worker（workers/scheduler.py）
-        │  POST /sync  を定期実行（SYNC_INTERVAL_MINUTES）
+        │  POST /sync を定期実行
         ▼
-FastAPI /sync
-        │  moomoo OpenD から注文・約定・ポジション・PnL を取得
-        ▼
-SQLite DB（orders / executions / positions / pnl）
+FastAPI /sync → moomoo OpenD → PostgreSQL（orders / positions / pnl）
 ```
 
 ---
@@ -45,57 +42,64 @@ SQLite DB（orders / executions / positions / pnl）
 
 | ソース | Worker | 説明 |
 |--------|--------|------|
-| Twitter | `twitter_poll.py` | 指定アカウントのツイートを GraphQL で定期取得。`$TICKER` を含む投稿を `/signals` に転送 |
-| Dexter | `dexter_poll.py` | Dexter エージェントの出力を定期取得し `/signals` に転送 |
-| 手動 | — | `POST /signals` に直接 JSON を送ることで任意のテキストを投入可能 |
+| Twitter | `twitter_poll.py` | 指定アカウントのツイートを GraphQL で定期取得。アラートハッシュタグ（`#デイトレアラート` `#スイングアラート` `#オプションアラート`）または `$TICKER` を含む投稿を転送 |
+| Dexter | `dexter_poll.py` | Dexter AI エージェントを定期実行し、シグナルを自動投入 |
+| 手動 | — | `POST /signals` で任意のテキストを直接投入可能 |
 
-### シグナル処理
+### LLM 抽出
 
-- **LLM 抽出**：Groq (llama-3.3-70b-versatile) または Ollama でティッカー・売買方向・信頼度・SL/TP を JSON として取り出す
-- **フォールバック**：LLM が失敗した場合は正規表現ベースの `naive_extract` が動作
-- **重複排除**：同じ tweet ID または URL のシグナルは保存・発注されない
+Groq（デフォルト）または Ollama で以下を JSON 抽出する：
+
+- ティッカー・売買方向（BUY / SELL）
+- 信頼度（0〜1）
+- エントリー価格・逆指値・ターゲット（複数可）
+- タイムフレーム・アラート種別
 
 ### 発注制御
 
-- `TWITTER_AUTO_TRADE_ENABLED` / `DEXTER_AUTO_TRADE_ENABLED` でソース別にオン/オフ
-- `TWITTER_BROKER_ENV` / `DEXTER_BROKER_ENV` でソース別に REAL / SIMULATE を切り替え
-- `MIN_CONFIDENCE`（デフォルト 0.7）を下回るシグナルは発注しない
-- 発注数量は `DEFAULT_ORDER_USD / 直近株価` で自動計算（株価取得失敗時は 1 株）
+- ソース別（Twitter / Dexter）に `AUTO_TRADE_ENABLED` と `BROKER_ENV`（REAL / SIMULATE）を設定
+- `MIN_CONFIDENCE` を下回るシグナルは発注しない
+- 発注数量は `DEFAULT_ORDER_USD / 直近株価` で自動計算
 
-### リスク管理
+### フロントエンド（ポート 80）
 
-- `MAX_POSITION_PER_TICKER`：ティッカーごとの最大建玉数（デフォルト 2）
-- `MAX_DAILY_LOSS`：日次最大損失額（現在は設定値を保持、チェック実装は今後）
+| 画面 | 説明 |
+|------|------|
+| Performance | 損益・約定・ポジション一覧 |
+| Signals | シグナル・注文・ポジション監視 |
+| Backtest | 記録済みシグナルの yfinance 実データによるシミュレーション |
+| Dexter | AI エージェントへの質問 |
+| Settings | 取引環境・Twitter Cookie・Worker 状態管理 |
 
-### ブローカー
+### LINE 通知
 
-| ブローカー | 概要 |
-|------------|------|
-| `moomoo` | moomoo 証券 OpenD 経由。REAL / SIMULATE 切り替え可 |
-| `paper` | ローカル DB 上のシミュレーション。OpenD 不要 |
-
-### 状態管理
-
-- `GET /orders` / `GET /positions` / `GET /executions` / `GET /pnl`：DB から最新状態を返す
-- `POST /sync`：moomoo OpenD から注文・約定・ポジション・PnL を取得して DB に反映
-- sync_worker が `SYNC_INTERVAL_MINUTES` おきに自動実行
-
-### フロントエンド
-
-- シグナル・注文・ポジション・PnL の一覧表示
-- Twitter Cookie（auth_token / ct0）の登録・ステータス確認
-- ポート 80 で提供（Docker 起動時）
+新規アラートツイートを検出すると LINE Push で通知する。
+エントリー・逆指値・ターゲット情報も含む。
 
 ---
 
 ## クイックスタート
 
 ```bash
+# .env.local を作成
+cp backend/.env backend/.env.local
+# 必要な値を記入（OPENAI_API_KEY など）
+
 # ペーパー取引（OpenD 不要）
 docker compose up -d
 
-# moomoo REAL / SIMULATE（OpenD 込み）
+# moomoo（OpenD 込み）
 docker compose --profile moomoo up -d
 ```
 
 詳細な設定は [backend/README.md](backend/README.md) を参照。
+
+---
+
+## データベース
+
+PostgreSQL 16（`trader-postgres` コンテナ）。`docker compose up` で自動起動する。
+
+接続情報（デフォルト）：
+- Host: `postgres` (Docker 内) / `localhost:5432` (外部)
+- DB: `trader` / User: `trader` / Password: `trader`

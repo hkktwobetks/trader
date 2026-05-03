@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Iterable, List
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -238,7 +238,7 @@ def patch_trading_settings(payload: TradingSettingsPatch):
 # ── OpenD Management ───────────────────────────────
 
 _OPEND_HOME = Path("/mnt/opend_home")
-_OPEND_TELNET_HOST = "127.0.0.1"
+_OPEND_TELNET_HOST = settings.moomoo_opend_host
 
 
 def _opend_api_port() -> int:
@@ -421,7 +421,6 @@ def set_twitter_cookies(payload: CookieIn):
 
 @app.get("/settings/twitter-cookies")
 def get_twitter_cookie_status():
-    """現在の Cookie ステータスを返す"""
     auth_token, ct0 = load_cookies()
     has_cookies = bool(auth_token and ct0)
     return {
@@ -429,6 +428,65 @@ def get_twitter_cookie_status():
         "version": get_version(),
         "auth_token_preview": auth_token[:8] + "..." if auth_token else None,
     }
+
+
+@app.post("/settings/twitter-cookies/verify")
+def verify_twitter_cookies():
+    """保存済みCookieで実際にTwitter APIを叩いて疎通確認する。"""
+    import httpx as _httpx
+    auth_token, ct0 = load_cookies()
+    if not auth_token or not ct0:
+        return {"valid": False, "error": "Cookieが保存されていません", "screen_name": None}
+
+    _BEARER = (
+        "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs="
+        "1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
+    )
+    import json as _json, os as _os
+    ep = _os.getenv("TW_EP_USER_BY_SCREENNAME", "sLVLhk0bGj3MVFEKTdax1w")
+    variables = _json.dumps({"screen_name": "x", "withSafetyModeUserFields": True})
+    features = _json.dumps({
+        "hidden_profile_likes_enabled": True,
+        "hidden_profile_subscriptions_enabled": True,
+        "responsive_web_graphql_exclude_directive_enabled": True,
+        "verified_phone_label_enabled": False,
+        "creator_subscriptions_tweet_preview_api_enabled": True,
+        "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
+        "responsive_web_graphql_timeline_navigation_enabled": True,
+    })
+    try:
+        r = _httpx.get(
+            f"https://x.com/i/api/graphql/{ep}/UserByScreenName",
+            params={"variables": variables, "features": features},
+            cookies={"auth_token": auth_token, "ct0": ct0},
+            headers={
+                "authorization": f"Bearer {_BEARER}",
+                "x-csrf-token": ct0,
+                "x-twitter-active-user": "yes",
+                "x-twitter-auth-type": "OAuth2Session",
+                "user-agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+            },
+            timeout=10,
+            follow_redirects=True,
+        )
+        if r.status_code == 401:
+            return {"valid": False, "error": "HTTP 401 — Cookieが無効または期限切れです", "screen_name": None}
+        if r.status_code == 403:
+            return {"valid": False, "error": "HTTP 403 — アクセスが拒否されました（Cookieが無効の可能性）", "screen_name": None}
+        if r.status_code != 200:
+            return {"valid": False, "error": f"HTTP {r.status_code}", "screen_name": None}
+        data = r.json()
+        errors = data.get("errors")
+        if errors:
+            return {"valid": False, "error": errors[0].get("message", "Twitter APIエラー"), "screen_name": None}
+        # 接続・認証OK（screen_nameはチェック対象ユーザーではなくcookie所有者は不明なのでnull）
+        return {"valid": True, "error": None, "screen_name": None}
+    except Exception as e:
+        return {"valid": False, "error": str(e), "screen_name": None}
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -548,6 +606,16 @@ def receive_signal(payload: SignalIn):
             )
             return {"status": "duplicate"}
 
+        def _detect_alert_type(t: str) -> str | None:
+            if "#オプションアラート" in t or "オプションアラート" in t:
+                return "オプション"
+            if "#スイングアラート" in t or "スイングアラート" in t:
+                return "スイング"
+            if "#デイトレアラート" in t or "デイトレアラート" in t:
+                return "デイトレ"
+            return None
+
+        import json as _json
         signal = Signal(
             message_id=message_id,
             author=str(author),
@@ -557,8 +625,11 @@ def receive_signal(payload: SignalIn):
             side=parsed.side,
             confidence=parsed.confidence,
             timeframe=parsed.timeframe,
+            alert_type=_detect_alert_type(content),
+            entry=parsed.entry,
             stop=parsed.stop,
             take=parsed.take,
+            targets=_json.dumps(parsed.targets) if parsed.targets else None,
         )
         s.add(signal)
         s.commit()
@@ -653,3 +724,76 @@ def receive_signal(payload: SignalIn):
         "auto_trade_enabled": source_auto_trade_enabled,
         "order": order_result,
     }
+
+
+# ── LINE Webhook (userId capture) ──────────────────────
+_line_captured_user_ids: list[str] = []
+
+
+@app.post("/line/webhook")
+async def line_webhook(request: Request):
+    try:
+        body = await request.json()
+        for event in body.get("events", []):
+            uid = event.get("source", {}).get("userId")
+            if uid and uid not in _line_captured_user_ids:
+                _line_captured_user_ids.append(uid)
+                log.info("LINE userId captured: %s", uid)
+    except Exception:
+        pass
+    return {}
+
+
+@app.get("/line/captured-users")
+def line_captured_users():
+    return {"user_ids": _line_captured_user_ids}
+
+
+# ── Backtest ──────────────────────────────────────────────────────────────────
+
+class SignalBacktestIn(BaseModel):
+    ticker: str | None = None
+    start: str | None = None
+    end: str | None = None
+    qty: float = 100.0
+    interval: str = "5m"
+
+
+@app.post("/backtest/signals")
+def backtest_signals(body: SignalBacktestIn):
+    from app.backtest import run_signal_backtest
+    from dataclasses import asdict
+    result = run_signal_backtest(
+        ticker=body.ticker or None,
+        start=body.start or None,
+        end=body.end or None,
+        qty=body.qty,
+        interval=body.interval,
+    )
+    return asdict(result)
+
+
+class SmaBacktestIn(BaseModel):
+    symbol: str = "AAPL"
+    timeframe: str = "1Day"
+    start: str = "2024-01-01"
+    end: str = "2024-12-31"
+    short_window: int = 5
+    long_window: int = 20
+    initial_equity: float = 100_000.0
+
+
+@app.post("/backtest/sma")
+def backtest_sma(body: SmaBacktestIn):
+    from app.backtest import run_sma_crossover
+    from dataclasses import asdict
+    result = run_sma_crossover(
+        symbol=body.symbol,
+        timeframe=body.timeframe,
+        start=body.start,
+        end=body.end,
+        short_window=body.short_window,
+        long_window=body.long_window,
+        initial_equity=body.initial_equity,
+    )
+    return asdict(result)

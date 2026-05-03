@@ -12,10 +12,13 @@ SYSTEM_PROMPT = (
     "あなたは株式トレード用の情報抽出器です。"
     "投稿から銘柄コード（US株ティッカーまたは日本株4桁コード）と売買方向（BUY/SELL）を読み取り、"
     "JSONのみ出力してください（説明不要、思考過程の出力禁止）。"
-    '形式: {"ticker":"AAPL","side":"BUY","confidence":0.8,"timeframe":null,"stop":null,"take":null}'
+    '形式: {"ticker":"AAPL","side":"BUY","confidence":0.8,"timeframe":null,"entry":null,"stop":null,"take":null,"targets":[]}'
     "\n日本語の表現では『イン』『買い』『ロング』『ブレイクでイン』『反発狙い』は BUY 寄り、"
     "『売り』『ショート』『空売り』『利確売り』は SELL 寄りとして扱ってください。"
-    "\n『ターゲット』『利確』『TP』は take、『逆指値』『損切り』『SL』は stop に対応させてください。"
+    "\n『エントリー』『指値』『〜でイン』『〜を超えたら』は entry に単一数値で設定。"
+    "\n『ターゲット』『利確』『TP』が複数ある場合は targets に数値の配列で設定し、take には targets[0] を入れてください。"
+    "例: ターゲット：3.93/4.15/4.63 → targets:[3.93,4.15,4.63], take:3.93"
+    "\n『逆指値』『損切り』『SL』は stop に対応させてください。"
     "\nニュースや決算コメントのように売買意図が弱い場合は confidence を 0 にしてください。"
     "\nside は必ず BUY か SELL のどちらかにしてください。LONG/SHORT は使わないでください。"
 )

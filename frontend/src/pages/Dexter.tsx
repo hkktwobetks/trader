@@ -58,10 +58,13 @@ export function DexterPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: trimmed }),
       });
-      const data = (await r.json()) as { answer?: string; detail?: string };
+      const text = await r.text();
+      let data: { answer?: string; detail?: string } = {};
+      try { data = JSON.parse(text); } catch { /* HTML error page (e.g. 504) */ }
       if (!r.ok) {
+        const errMsg = data.detail ?? (r.status === 504 ? `タイムアウト (${r.status}) — Dexterの応答に時間がかかりすぎました` : `エラー (${r.status})`);
         setHistory((h) =>
-          h.map((e) => e.id === id ? { ...e, loading: false, error: data.detail ?? "エラー" } : e)
+          h.map((e) => e.id === id ? { ...e, loading: false, error: errMsg } : e)
         );
       } else {
         setHistory((h) =>

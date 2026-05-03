@@ -1,6 +1,5 @@
-import React, { useMemo, useState } from "react";
+import React, { useState } from "react";
 import {
-  ActionIcon,
   Badge,
   Box,
   Button,
@@ -10,88 +9,110 @@ import {
   Group,
   Loader,
   NumberInput,
+  SegmentedControl,
   SimpleGrid,
   Stack,
   Table,
   Text,
   TextInput,
   Title,
-  Tooltip,
 } from "@mantine/core";
-import { FlaskConical, Play, RefreshCw } from "lucide-react";
+import { Play } from "lucide-react";
 
 const API = "/api";
 
-type SmaBacktestResult = {
-  symbol: string;
-  start: string;
-  end: string;
-  initial_equity: number;
-  final_equity: number;
-  total_return_pct: number;
-  max_drawdown_pct: number;
-  trades: {
-    entry_date: string;
-    exit_date: string;
-    entry_price: number;
-    exit_price: number;
-    pnl: number;
-  }[];
+type SignalTrade = {
+  signal_id: number;
+  ticker: string;
+  side: string;
+  signal_date: string;
+  entry_price: number;
+  stop: number | null;
+  first_target: number | null;
+  exit_price: number | null;
+  exit_date: string | null;
+  outcome: string;
+  pnl: number;
+  qty: number;
+  rr_ratio: number | null;
 };
 
-function Metric({ label, value }: { label: string; value: string }) {
+type SignalBacktestResult = {
+  start: string;
+  end: string;
+  ticker_filter: string | null;
+  total_signals: number;
+  tradeable: number;
+  wins: number;
+  losses: number;
+  open_trades: number;
+  win_rate_pct: number;
+  total_pnl: number;
+  avg_rr: number | null;
+  trades: SignalTrade[];
+};
+
+function Metric({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
     <Card withBorder>
-      <Text size="xs" tt="uppercase" fw={700} c="dimmed">
-        {label}
-      </Text>
-      <Text fz={24} fw={800} mt={6} style={{ fontVariantNumeric: "tabular-nums" }}>
+      <Text size="xs" tt="uppercase" fw={700} c="dimmed">{label}</Text>
+      <Text fz={22} fw={800} mt={4} c={color} style={{ fontVariantNumeric: "tabular-nums" }}>
         {value}
       </Text>
     </Card>
   );
 }
 
-export function BacktestPage() {
-  const [backtest, setBacktest] = useState<SmaBacktestResult | null>(null);
-  const [btSymbol, setBtSymbol] = useState("AAPL");
-  const [btStart, setBtStart] = useState("2024-01-01");
-  const [btEnd, setBtEnd] = useState("2024-12-31");
-  const [btShort, setBtShort] = useState(5);
-  const [btLong, setBtLong] = useState(20);
-  const [btLoading, setBtLoading] = useState(false);
+function OutcomeBadge({ outcome }: { outcome: string }) {
+  const map: Record<string, { color: string; label: string }> = {
+    win: { color: "teal", label: "WIN" },
+    loss: { color: "red", label: "LOSS" },
+    open: { color: "blue", label: "OPEN" },
+    no_data: { color: "gray", label: "NO DATA" },
+    no_target: { color: "gray", label: "NO TARGET" },
+    no_entry: { color: "gray", label: "NO ENTRY" },
+  };
+  const m = map[outcome] ?? { color: "gray", label: outcome };
+  return <Badge color={m.color} variant="light" size="sm">{m.label}</Badge>;
+}
 
-  const runBacktest = async () => {
-    setBtLoading(true);
-    setBacktest(null);
+export function BacktestPage() {
+  const [ticker, setTicker] = useState("");
+  const [start, setStart] = useState("");
+  const [end, setEnd] = useState("");
+  const [qty, setQty] = useState<number>(100);
+  const [interval, setInterval] = useState("5m");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<SignalBacktestResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async () => {
+    setLoading(true);
+    setResult(null);
+    setError(null);
     try {
-      const res = await fetch(`${API}/backtest/sma`, {
+      const res = await fetch(`${API}/backtest/signals`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          symbol: btSymbol.trim().toUpperCase() || "AAPL",
-          timeframe: "1Day",
-          start: btStart,
-          end: btEnd,
-          short_window: btShort,
-          long_window: btLong,
+          ticker: ticker.trim().toUpperCase() || null,
+          start: start || null,
+          end: end || null,
+          qty,
+          interval,
         }),
       });
-      if (res.ok) setBacktest((await res.json()) as SmaBacktestResult);
+      if (!res.ok) {
+        setError(`エラー: ${res.status}`);
+        return;
+      }
+      setResult(await res.json());
+    } catch (e) {
+      setError(String(e));
     } finally {
-      setBtLoading(false);
+      setLoading(false);
     }
   };
-
-  const summary = useMemo(() => {
-    if (!backtest) return null;
-    return {
-      totalReturn: `${backtest.total_return_pct >= 0 ? "+" : ""}${backtest.total_return_pct.toFixed(2)}%`,
-      mdd: `${backtest.max_drawdown_pct.toFixed(2)}%`,
-      finalEq: `${backtest.final_equity.toFixed(2)}`,
-      nTrades: `${backtest.trades.length}`,
-    };
-  }, [backtest]);
 
   return (
     <Stack gap="lg">
@@ -99,122 +120,191 @@ export function BacktestPage() {
         <Box>
           <Title order={2}>Backtest Lab</Title>
           <Text c="dimmed" size="sm" mt={4}>
-            SMA クロスの簡易バックテストを実行し、結果を一覧で確認します。
+            記録済みシグナルをベースに、yfinance の実データでトレードをシミュレートします。
           </Text>
         </Box>
-        <Group gap="sm">
-          <Badge variant="light" size="lg" leftSection={<FlaskConical size={14} />}>
-            Experiment
-          </Badge>
-          <Tooltip label="Run">
-            <ActionIcon variant="subtle" size="lg" onClick={runBacktest} loading={btLoading} aria-label="run">
-              <Play size={20} />
-            </ActionIcon>
-          </Tooltip>
-        </Group>
       </Group>
 
       <Grid>
-        <Grid.Col span={{ base: 12, md: 5 }}>
+        <Grid.Col span={{ base: 12, md: 4 }}>
           <Card withBorder>
             <Group justify="space-between" mb="xs">
               <Text fw={800}>Parameters</Text>
-              <Button variant="light" onClick={runBacktest} leftSection={<RefreshCw size={16} />} loading={btLoading}>
+              <Button variant="light" onClick={run} leftSection={<Play size={14} />} loading={loading}>
                 Run
               </Button>
             </Group>
             <Divider mb="md" />
-
-            <SimpleGrid cols={2} spacing="sm">
-              <TextInput label="Symbol" value={btSymbol} onChange={(e) => setBtSymbol(e.currentTarget.value)} />
-              <TextInput label="Timeframe" value="1Day" readOnly />
-              <TextInput label="Start" type="date" value={btStart} onChange={(e) => setBtStart(e.currentTarget.value)} />
-              <TextInput label="End" type="date" value={btEnd} onChange={(e) => setBtEnd(e.currentTarget.value)} />
-              <NumberInput label="Short" value={btShort} onChange={(v) => setBtShort(Number(v) || 0)} min={1} />
-              <NumberInput label="Long" value={btLong} onChange={(v) => setBtLong(Number(v) || 0)} min={1} />
-            </SimpleGrid>
+            <Stack gap="sm">
+              <TextInput
+                label="Ticker（空欄=全銘柄）"
+                placeholder="AAPL"
+                value={ticker}
+                onChange={(e) => setTicker(e.currentTarget.value)}
+              />
+              <SimpleGrid cols={2} spacing="sm">
+                <TextInput
+                  label="開始日"
+                  type="date"
+                  value={start}
+                  onChange={(e) => setStart(e.currentTarget.value)}
+                />
+                <TextInput
+                  label="終了日"
+                  type="date"
+                  value={end}
+                  onChange={(e) => setEnd(e.currentTarget.value)}
+                />
+              </SimpleGrid>
+              <NumberInput
+                label="1トレードの株数"
+                value={qty}
+                onChange={(v) => setQty(Number(v) || 100)}
+                min={1}
+              />
+              <div>
+                <Text size="sm" fw={500} mb={4}>バーサイズ</Text>
+                <SegmentedControl
+                  size="xs"
+                  value={interval}
+                  onChange={setInterval}
+                  data={[
+                    { value: "1m", label: "1m" },
+                    { value: "5m", label: "5m" },
+                    { value: "15m", label: "15m" },
+                    { value: "1h", label: "1h" },
+                    { value: "1d", label: "1d" },
+                  ]}
+                  fullWidth
+                />
+              </div>
+            </Stack>
 
             <Card withBorder mt="md" bg="gray.0">
-              <Text size="sm" fw={700}>
-                Note
-              </Text>
-              <Text size="sm" c="dimmed">
-                現状のAPIは「SMA戦略」固定です。今後 RSI / MACD や、手数料・スリッページ等
-                のパラメータを追加すると研究画面として豪華になります。
+              <Text size="xs" fw={700} mb={4}>シミュレーションロジック</Text>
+              <Text size="xs" c="dimmed">
+                シグナルのエントリー価格でイン → 指定バーサイズで
+                ストップ（安値 ≤ stop）またはターゲット（高値 ≥ target）
+                の先ヒット側で決済。同バーでヒットはストップ優先。
+                5m/15m は直近 60 日、1m は 7 日が限界。古いシグナルは自動的に 1d にフォールバック。
               </Text>
             </Card>
           </Card>
         </Grid.Col>
 
-        <Grid.Col span={{ base: 12, md: 7 }}>
+        <Grid.Col span={{ base: 12, md: 8 }}>
           <Stack gap="md">
-            <Card withBorder>
-              <Text fw={800} mb="xs">
-                Result Summary
-              </Text>
-              <Divider mb="md" />
+            {error && (
+              <Card withBorder bg="red.0">
+                <Text size="sm" c="red">{error}</Text>
+              </Card>
+            )}
 
-              {summary ? (
+            {loading && (
+              <Card withBorder>
+                <Group gap="sm">
+                  <Loader size="sm" />
+                  <Text size="sm" c="dimmed">yfinance でデータ取得中…（数秒かかります）</Text>
+                </Group>
+              </Card>
+            )}
+
+            {result && (
+              <>
                 <SimpleGrid cols={{ base: 2, md: 4 }} spacing="md">
-                  <Metric label="Total Return" value={summary.totalReturn} />
-                  <Metric label="Max DD" value={summary.mdd} />
-                  <Metric label="Final Equity" value={summary.finalEq} />
-                  <Metric label="#Trades" value={summary.nTrades} />
+                  <Metric label="シグナル数" value={String(result.total_signals)} />
+                  <Metric
+                    label="勝率"
+                    value={result.wins + result.losses > 0 ? `${result.win_rate_pct}%` : "—"}
+                    color={result.win_rate_pct >= 50 ? "teal" : "red"}
+                  />
+                  <Metric
+                    label="合計損益"
+                    value={`${result.total_pnl >= 0 ? "+" : ""}$${result.total_pnl.toFixed(0)}`}
+                    color={result.total_pnl >= 0 ? "teal" : "red"}
+                  />
+                  <Metric
+                    label="平均 R:R"
+                    value={result.avg_rr != null ? result.avg_rr.toFixed(2) : "—"}
+                  />
                 </SimpleGrid>
-              ) : (
-                <Text size="sm" c="dimmed">
-                  まだ結果がありません。左の Run ボタンでバックテストを実行してください。
-                </Text>
-              )}
-            </Card>
 
-            <Card withBorder>
-              <Group justify="space-between" mb="xs">
-                <Text fw={800}>Trades</Text>
-                {btLoading && <Loader size="sm" />}
-              </Group>
-              <Divider mb="sm" />
+                <Card withBorder>
+                  <Group gap="md" mb="sm">
+                    <Text size="sm"><Text span fw={700}>{result.wins}</Text> <Text span c="teal">WIN</Text></Text>
+                    <Text size="sm"><Text span fw={700}>{result.losses}</Text> <Text span c="red">LOSS</Text></Text>
+                    <Text size="sm"><Text span fw={700}>{result.open_trades}</Text> <Text span c="blue">OPEN</Text></Text>
+                    <Text size="sm" c="dimmed">({result.tradeable} シミュレート可)</Text>
+                  </Group>
+                  <Divider mb="sm" />
 
-              {backtest == null ? (
+                  {result.trades.length === 0 ? (
+                    <Text size="sm" c="dimmed">トレードがありません。</Text>
+                  ) : (
+                    <Table striped highlightOnHover>
+                      <Table.Thead>
+                        <Table.Tr>
+                          <Table.Th>Date</Table.Th>
+                          <Table.Th>Ticker</Table.Th>
+                          <Table.Th style={{ textAlign: "right" }}>Entry</Table.Th>
+                          <Table.Th style={{ textAlign: "right" }}>Stop</Table.Th>
+                          <Table.Th style={{ textAlign: "right" }}>Target</Table.Th>
+                          <Table.Th style={{ textAlign: "right" }}>Exit</Table.Th>
+                          <Table.Th>Result</Table.Th>
+                          <Table.Th style={{ textAlign: "right" }}>R:R</Table.Th>
+                          <Table.Th style={{ textAlign: "right" }}>PnL</Table.Th>
+                        </Table.Tr>
+                      </Table.Thead>
+                      <Table.Tbody>
+                        {result.trades.map((t) => (
+                          <Table.Tr key={t.signal_id}>
+                            <Table.Td style={{ whiteSpace: "nowrap", fontSize: 12 }}>
+                              {new Date(t.signal_date).toLocaleString("ja-JP")}
+                            </Table.Td>
+                            <Table.Td>
+                              <Text fw={700} size="sm">{t.ticker}</Text>
+                            </Table.Td>
+                            <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>
+                              {t.entry_price ? `$${t.entry_price.toFixed(2)}` : "—"}
+                            </Table.Td>
+                            <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>
+                              {t.stop != null ? <Text size="sm" c="red">${t.stop.toFixed(2)}</Text> : <Text size="xs" c="dimmed">—</Text>}
+                            </Table.Td>
+                            <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>
+                              {t.first_target != null ? <Text size="sm" c="teal">${t.first_target.toFixed(2)}</Text> : <Text size="xs" c="dimmed">—</Text>}
+                            </Table.Td>
+                            <Table.Td style={{ fontVariantNumeric: "tabular-nums", fontSize: 12 }}>
+                              {t.exit_price != null
+                                ? <><Text size="sm" span>${t.exit_price.toFixed(2)}</Text><br/><Text size="xs" c="dimmed">{t.exit_date ?? ""}</Text></>
+                                : "—"}
+                            </Table.Td>
+                            <Table.Td><OutcomeBadge outcome={t.outcome} /></Table.Td>
+                            <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>
+                              {t.rr_ratio != null ? t.rr_ratio.toFixed(2) : "—"}
+                            </Table.Td>
+                            <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>
+                              {t.pnl !== 0 ? (
+                                <Text size="sm" c={t.pnl >= 0 ? "teal" : "red"} fw={600}>
+                                  {t.pnl >= 0 ? "+" : ""}${t.pnl.toFixed(0)}
+                                </Text>
+                              ) : "—"}
+                            </Table.Td>
+                          </Table.Tr>
+                        ))}
+                      </Table.Tbody>
+                    </Table>
+                  )}
+                </Card>
+              </>
+            )}
+
+            {!result && !loading && !error && (
+              <Card withBorder>
                 <Text size="sm" c="dimmed">
-                  バックテスト結果がありません。
+                  左の Run ボタンでバックテストを実行してください。
                 </Text>
-              ) : backtest.trades.length === 0 ? (
-                <Text size="sm" c="dimmed">
-                  トレードが発生しませんでした。
-                </Text>
-              ) : (
-                <Table striped highlightOnHover>
-                  <Table.Thead>
-                    <Table.Tr>
-                      <Table.Th>Entry</Table.Th>
-                      <Table.Th>Exit</Table.Th>
-                      <Table.Th style={{ textAlign: "right" }}>Entry Px</Table.Th>
-                      <Table.Th style={{ textAlign: "right" }}>Exit Px</Table.Th>
-                      <Table.Th style={{ textAlign: "right" }}>PnL</Table.Th>
-                    </Table.Tr>
-                  </Table.Thead>
-                  <Table.Tbody>
-                    {backtest.trades.slice(0, 200).map((t, idx) => (
-                      <Table.Tr key={`${t.entry_date}-${t.exit_date}-${idx}`}>
-                        <Table.Td>{t.entry_date}</Table.Td>
-                        <Table.Td>{t.exit_date}</Table.Td>
-                        <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                          {t.entry_price.toFixed(2)}
-                        </Table.Td>
-                        <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                          {t.exit_price.toFixed(2)}
-                        </Table.Td>
-                        <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                          {t.pnl >= 0 ? "+" : ""}
-                          {t.pnl.toFixed(2)}
-                        </Table.Td>
-                      </Table.Tr>
-                    ))}
-                  </Table.Tbody>
-                </Table>
-              )}
-            </Card>
+              </Card>
+            )}
           </Stack>
         </Grid.Col>
       </Grid>

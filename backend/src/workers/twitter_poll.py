@@ -22,9 +22,12 @@ ALERT_HASHTAG = "#デイトレアラート"
 ALERT_KEYWORD = "デイトレアラート"
 SWING_HASHTAG = "#スイングアラート"
 SWING_KEYWORD = "スイングアラート"
+OPTION_HASHTAG = "#オプションアラート"
+OPTION_KEYWORD = "オプションアラート"
 
 # エンドポイント ID は Twitter のデプロイで変わることがある → env で上書き可能
 EP_USER_TWEETS = os.getenv("TW_EP_USER_TWEETS", "naBcZ4al-iTCFBYGOAMzBQ")
+EP_USER_TWEETS_AND_REPLIES = os.getenv("TW_EP_USER_TWEETS_AND_REPLIES", "Y9WM4Id6UcGFE5J9jIJFUA")
 EP_USER_BY_SCREENNAME = os.getenv("TW_EP_USER_BY_SCREENNAME", "sLVLhk0bGj3MVFEKTdax1w")
 
 BEARER = (
@@ -160,6 +163,19 @@ async def fetch_user_tweets(client: httpx.AsyncClient, user_id: int, seen: set) 
         "withQuickPromoteEligibilityTweetFields": True,
         "withVoice": True,
     })
+    # まず返信込みのエンドポイントを試みる
+    try:
+        r = await client.get(
+            f"{BASE}/{EP_USER_TWEETS_AND_REPLIES}/UserTweetsAndReplies",
+            params={"variables": variables, "features": TWEET_FEATURES},
+        )
+        if r.status_code == 200:
+            return _parse_tweets(r.json(), seen)
+        log.debug("UserTweetsAndReplies returned %d, falling back", r.status_code)
+    except Exception as e:
+        log.debug("UserTweetsAndReplies failed: %s, falling back", e)
+
+    # フォールバック: 通常ツイートのみ
     try:
         r = await client.get(
             f"{BASE}/{EP_USER_TWEETS}/UserTweets",
@@ -172,7 +188,50 @@ async def fetch_user_tweets(client: httpx.AsyncClient, user_id: int, seen: set) 
         return []
 
 
-def post_signal(text: str, meta: dict) -> None:
+def _notify_line(text: str, username: str, signal_meta: dict | None = None) -> None:
+    token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
+    user_id = os.getenv("LINE_USER_ID", "")
+    if not token or not user_id:
+        return
+
+    lines = [f"📢 @{username}"]
+    if signal_meta:
+        ticker = signal_meta.get("ticker", "")
+        side = signal_meta.get("side", "")
+        if ticker and side:
+            icon = "🟢" if side == "BUY" else "🔴"
+            lines.append(f"{icon} {ticker} {side}")
+        if signal_meta.get("entry"):
+            lines.append(f"エントリー: ${signal_meta['entry']:.2f}")
+        if signal_meta.get("stop"):
+            lines.append(f"逆指値: ${signal_meta['stop']:.2f}")
+        targets = signal_meta.get("targets")
+        if targets:
+            try:
+                import json as _j
+                ts = _j.loads(targets) if isinstance(targets, str) else targets
+                lines.append("目標: " + " / ".join(f"${t:.2f}" for t in ts))
+            except Exception:
+                pass
+        elif signal_meta.get("take"):
+            lines.append(f"目標: ${signal_meta['take']:.2f}")
+        if signal_meta.get("timeframe"):
+            lines.append(f"期間: {signal_meta['timeframe']}")
+        lines.append("")
+    lines.append(text[:200])
+
+    try:
+        httpx.post(
+            "https://api.line.me/v2/bot/message/push",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"to": user_id, "messages": [{"type": "text", "text": "\n".join(lines)}]},
+            timeout=10,
+        )
+    except Exception as e:
+        log.warning("LINE notify failed: %s", e)
+
+
+def post_signal(text: str, meta: dict) -> dict | None:
     try:
         r = httpx.post(
             f"{API_BASE}/signals",
@@ -181,8 +240,11 @@ def post_signal(text: str, meta: dict) -> None:
         )
         r.raise_for_status()
         log.info("-> posted: %s", meta.get("url"))
+        data = r.json()
+        return data.get("signal")
     except Exception as e:
         log.warning("API post failed: %s", e)
+        return None
 
 
 def heartbeat() -> bool:
@@ -203,6 +265,8 @@ def should_forward_tweet(text: str) -> bool:
         or ALERT_KEYWORD in text
         or SWING_HASHTAG in text
         or SWING_KEYWORD in text
+        or OPTION_HASHTAG in text
+        or OPTION_KEYWORD in text
     )
 
 
@@ -238,10 +302,16 @@ async def main() -> None:
                                 reason = "$ticker"
                             elif SWING_HASHTAG in text or SWING_KEYWORD in text:
                                 reason = SWING_KEYWORD
+                            elif OPTION_HASHTAG in text or OPTION_KEYWORD in text:
+                                reason = OPTION_KEYWORD
                             else:
                                 reason = ALERT_KEYWORD
                             log.info("  -> forwarding to API (%s)", reason)
-                            post_signal(text, tw)
+                            signal = post_signal(text, tw)
+                            _notify_line(text, tw.get("username", username), signal)
+                        else:
+                            # シグナル対象外でも LINE には全ツイートを転送
+                            _notify_line(text, tw.get("username", username))
             else:
                 log.info("polling paused (disabled via API settings)")
             await asyncio.sleep(POLL_SEC)

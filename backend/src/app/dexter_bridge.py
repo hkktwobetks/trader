@@ -24,7 +24,7 @@ if (!query) {
 }
 
 const model = process.env.DEXTER_MODEL || undefined;
-const agent = await Agent.create({ maxIterations: 8, ...(model ? { model } : {}) });
+const agent = await Agent.create({ maxIterations: 3, ...(model ? { model } : {}) });
 let answer = '';
 for await (const event of agent.run(query)) {
   if (event.type === 'done') {
@@ -80,6 +80,7 @@ def run_dexter_once(dexter_dir: Path, query: str) -> str:
             capture_output=True,
             text=True,
             check=False,
+            timeout=1500,
         )
     finally:
         runner_path.unlink(missing_ok=True)

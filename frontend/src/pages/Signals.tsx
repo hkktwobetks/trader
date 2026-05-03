@@ -8,7 +8,6 @@ import {
   Divider,
   Grid,
   Group,
-  NumberInput,
   SegmentedControl,
   Stack,
   Table,
@@ -27,6 +26,12 @@ type SignalRow = {
   ticker: string;
   side: string;
   confidence: number | null;
+  alert_type: string | null;
+  entry: number | null;
+  stop: number | null;
+  take: number | null;
+  targets: string | null;
+  timeframe: string | null;
   created_at: string;
 };
 
@@ -78,7 +83,6 @@ export function SignalsPage() {
   const [positions, setPositions] = useState<PositionRow[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState("");
-  const [minConf, setMinConf] = useState<number | "">("");
 
   const fetchAll = async (e = env, at = accType) => {
     setRefreshing(true);
@@ -113,12 +117,10 @@ export function SignalsPage() {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return signals.filter((s) => {
-      const matchQ = !q || s.ticker.toLowerCase().includes(q) || s.author.toLowerCase().includes(q);
-      const matchC = minConf === "" || (s.confidence ?? 0) >= (minConf as number);
-      return matchQ && matchC;
-    });
-  }, [signals, query, minConf]);
+    return signals.filter((s) =>
+      !q || s.ticker.toLowerCase().includes(q) || s.author.toLowerCase().includes(q)
+    );
+  }, [signals, query]);
 
   return (
     <Stack gap="lg">
@@ -159,14 +161,6 @@ export function SignalsPage() {
               onChange={(e) => setQuery(e.currentTarget.value)}
               style={{ width: 160 }}
             />
-            <NumberInput
-              size="xs"
-              placeholder="min conf"
-              value={minConf}
-              onChange={(v) => setMinConf(v === "" ? "" : Number(v))}
-              min={0} max={1} step={0.05} decimalScale={2}
-              style={{ width: 100 }}
-            />
           </Group>
         </Group>
         <Divider mb="sm" />
@@ -177,10 +171,11 @@ export function SignalsPage() {
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>Time</Table.Th>
-                <Table.Th>Author</Table.Th>
                 <Table.Th>Ticker</Table.Th>
                 <Table.Th>Side</Table.Th>
-                <Table.Th style={{ textAlign: "right" }}>Conf.</Table.Th>
+                <Table.Th style={{ textAlign: "right" }}>Entry</Table.Th>
+                <Table.Th style={{ textAlign: "right" }}>Stop</Table.Th>
+                <Table.Th style={{ textAlign: "right" }}>Target</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
@@ -189,11 +184,31 @@ export function SignalsPage() {
                   <Table.Td style={{ whiteSpace: "nowrap", fontSize: 12 }}>
                     {new Date(s.created_at).toLocaleString("ja-JP")}
                   </Table.Td>
-                  <Table.Td style={{ fontSize: 13 }}>{s.author}</Table.Td>
-                  <Table.Td><Text fw={700} size="sm">{s.ticker}</Text></Table.Td>
+                  <Table.Td>
+                    <Group gap={4} wrap="nowrap">
+                      <Text fw={700} size="sm">{s.ticker}</Text>
+                      {s.alert_type && (
+                        <Badge size="xs" variant="light"
+                          color={s.alert_type === "オプション" ? "violet" : s.alert_type === "スイング" ? "blue" : "orange"}>
+                          {s.alert_type}
+                        </Badge>
+                      )}
+                    </Group>
+                    {s.timeframe && <Text size="xs" c="dimmed">{s.timeframe}</Text>}
+                  </Table.Td>
                   <Table.Td><SideBadge side={s.side} /></Table.Td>
                   <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>
-                    {s.confidence == null ? "—" : s.confidence.toFixed(2)}
+                    {s.entry == null ? <Text size="xs" c="dimmed">—</Text> : <Text size="sm" fw={600}>${Number(s.entry).toFixed(2)}</Text>}
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>
+                    {s.stop == null ? <Text size="xs" c="dimmed">—</Text> : <Text size="sm" c="red">${Number(s.stop).toFixed(2)}</Text>}
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>
+                    {(() => {
+                      const ts: number[] = s.targets ? JSON.parse(s.targets) : s.take != null ? [Number(s.take)] : [];
+                      if (ts.length === 0) return <Text size="xs" c="dimmed">—</Text>;
+                      return <Text size="sm" c="teal">{ts.map(t => `$${Number(t).toFixed(2)}`).join(" / ")}</Text>;
+                    })()}
                   </Table.Td>
                 </Table.Tr>
               ))}

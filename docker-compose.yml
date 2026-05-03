@@ -1,5 +1,22 @@
 services:
 
+  # ── データベース ───────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: trader-postgres
+    environment:
+      POSTGRES_DB: trader
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: trader
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks: [trader]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trader -d trader"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   # ── コアサービス ───────────────────────────────────────
   backend:
     build: ./backend
@@ -12,8 +29,8 @@ services:
     environment:
       PYTHONPATH: /app/src
       TZ: Asia/Tokyo
-      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/trader.db}
-      MOOMOO_OPEND_HOST: ${MOOMOO_OPEND_HOST:-127.0.0.1}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://trader:trader@postgres:5432/trader}
+      MOOMOO_OPEND_HOST: ${MOOMOO_OPEND_HOST:-opend}
       MOOMOO_OPEND_PORT: ${MOOMOO_OPEND_PORT:-11111}
       MOOMOO_RSA_PRIVATE_KEY_PATH: ${MOOMOO_RSA_PRIVATE_KEY_PATH:-/app/opend_keys/conn_key.pem}
       COOKIE_STORE_PATH: /app/cookie_data/twitter_cookies.json
@@ -24,6 +41,9 @@ services:
       - /home/daiki/dexter:/home/daiki/dexter
       - opend_home:/mnt/opend_home:ro  # read captcha image from opend
       - /var/run/docker.sock:/var/run/docker.sock:ro  # docker exec for captcha submission
+    depends_on:
+      postgres:
+        condition: service_healthy
     command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
     networks: [trader]
     healthcheck:
@@ -105,15 +125,11 @@ services:
       context: .
       dockerfile: backend/opend/Dockerfile
     container_name: moomoo-opend
-    depends_on:
-      backend:
-        condition: service_healthy
-    network_mode: "service:backend"
     env_file:
       - ./backend/.env
       - ./backend/.env.local
     environment:
-      MOOMOO_API_IP: 127.0.0.1
+      MOOMOO_API_IP: 0.0.0.0
       MOOMOO_API_PORT: 11111
       MOOMOO_TELNET_IP: 127.0.0.1
       MOOMOO_TELNET_PORT: 22222
@@ -122,6 +138,7 @@ services:
       - ./backend/opend_data:/opt/opend/FutuOpenD/Log
       - ./backend/opend_keys:/opt/opend/keys:ro
       - opend_home:/root/.com.moomoo.OpenD  # captcha image shared with backend
+    networks: [trader]
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/11111'"]
@@ -138,3 +155,4 @@ volumes:
   backend_data:
   cookie_data:
   opend_home:
+  postgres_data:

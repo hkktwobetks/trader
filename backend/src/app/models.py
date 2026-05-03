@@ -13,8 +13,11 @@ class Signal(SQLModel, table=True):
     side: str # BUY/SELL
     confidence: float | None = None
     timeframe: str | None = None
+    alert_type: str | None = None   # デイトレ / スイング / オプション
+    entry: float | None = None
     stop: float | None = None
-    take: float | None = None
+    take: float | None = None       # 第一ターゲット（後方互換）
+    targets: str | None = None     # JSON配列 "[3.93, 4.15, 4.63]"
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

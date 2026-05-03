@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Badge,
@@ -13,10 +13,11 @@ import {
   Stack,
   Switch,
   Text,
+  Textarea,
   TextInput,
   Title,
 } from "@mantine/core";
-import { AlertTriangle, RefreshCw, Twitter } from "lucide-react";
+import { AlertTriangle, Check, Cookie, RefreshCw, Save, Twitter, X } from "lucide-react";
 
 const API = "/api";
 
@@ -308,6 +309,153 @@ function OpendCard() {
   );
 }
 
+type CookieStatus = {
+  has_cookies: boolean;
+  version: string | null;
+  auth_token_preview: string | null;
+};
+
+function parseCookiePaste(raw: string): { auth_token: string; ct0: string } {
+  let auth_token = "", ct0 = "";
+  for (const p of raw.split(/;\s*/)) {
+    const [k, ...v] = p.split("=");
+    const key = k.trim(), val = v.join("=").trim();
+    if (key === "auth_token") auth_token = val;
+    if (key === "ct0") ct0 = val;
+  }
+  return { auth_token, ct0 };
+}
+
+function TwitterCookieCard() {
+  const [status, setStatus] = useState<CookieStatus | null>(null);
+  const [cookiePaste, setCookiePaste] = useState("");
+  const [authToken, setAuthToken] = useState("");
+  const [ct0, setCt0] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [notice, setNotice] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
+
+  const parsed = useMemo(() => parseCookiePaste(cookiePaste), [cookiePaste]);
+  useEffect(() => {
+    if (parsed.auth_token) setAuthToken(parsed.auth_token);
+    if (parsed.ct0) setCt0(parsed.ct0);
+  }, [parsed.auth_token, parsed.ct0]);
+
+  const fetchStatus = async () => {
+    try {
+      const r = await fetch(`${API}/settings/twitter-cookies`);
+      if (r.ok) setStatus(await r.json());
+    } catch {}
+  };
+  useEffect(() => { fetchStatus(); }, []);
+
+  const save = async () => {
+    setSaving(true);
+    setNotice(null);
+    try {
+      if (!authToken.trim() || !ct0.trim()) {
+        setNotice({ kind: "err", msg: "auth_token と ct0 を入力してください" });
+        return;
+      }
+      const r = await fetch(`${API}/settings/twitter-cookies`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ auth_token: authToken.trim(), ct0: ct0.trim() }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { setNotice({ kind: "err", msg: data.detail ?? "保存失敗" }); return; }
+      setNotice(data.valid
+        ? { kind: "ok", msg: `保存成功 ${data.version ? `(${data.version})` : ""}` }
+        : { kind: "err", msg: `保存済み / 検証失敗: ${data.error ?? "不明"}` });
+      await fetchStatus();
+    } catch (e) {
+      setNotice({ kind: "err", msg: String(e) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const verify = async () => {
+    setChecking(true);
+    setNotice(null);
+    try {
+      const r = await fetch(`${API}/settings/twitter-cookies/verify`, { method: "POST" });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { setNotice({ kind: "err", msg: data.detail ?? "エラー" }); return; }
+      setNotice(data.valid
+        ? { kind: "ok", msg: `接続成功${data.screen_name ? ` @${data.screen_name}` : ""}` }
+        : { kind: "err", msg: `接続失敗: ${data.error ?? "不明"}` });
+    } catch (e) {
+      setNotice({ kind: "err", msg: String(e) });
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <Card withBorder>
+      <Group justify="space-between" mb="sm">
+        <Group gap="sm">
+          <Twitter size={18} />
+          <Text fw={700}>Twitter Cookie</Text>
+        </Group>
+        {status && (
+          <Badge color={status.has_cookies ? "teal" : "gray"} variant="light" size="sm" leftSection={<Cookie size={12} />}>
+            {status.has_cookies ? `設定済み (${status.auth_token_preview ?? ""})` : "未設定"}
+          </Badge>
+        )}
+      </Group>
+      <Divider mb="md" />
+      <Stack gap="sm">
+        {notice && (
+          <Alert
+            color={notice.kind === "ok" ? "teal" : "red"}
+            variant="light"
+            withCloseButton
+            onClose={() => setNotice(null)}
+            icon={notice.kind === "ok" ? <Check size={14} /> : <X size={14} />}
+          >
+            <Text size="sm">{notice.msg}</Text>
+          </Alert>
+        )}
+        <Textarea
+          label="Cookie 貼り付け（自動解析）"
+          placeholder="auth_token=xxxxx; ct0=yyyyy; …"
+          value={cookiePaste}
+          onChange={(e) => setCookiePaste(e.currentTarget.value)}
+          minRows={2}
+          autosize
+        />
+        <TextInput
+          label="auth_token"
+          value={authToken}
+          onChange={(e) => setAuthToken(e.currentTarget.value)}
+          placeholder="40文字の16進文字列"
+          styles={{ input: { fontFamily: "monospace", fontSize: 12 } }}
+        />
+        <TextInput
+          label="ct0"
+          value={ct0}
+          onChange={(e) => setCt0(e.currentTarget.value)}
+          placeholder="ct0 の値"
+          styles={{ input: { fontFamily: "monospace", fontSize: 12 } }}
+        />
+        <Group gap="sm">
+          <Button size="xs" leftSection={<Save size={13} />} onClick={save} loading={saving}>
+            保存 & テスト
+          </Button>
+          <Button size="xs" variant="light" leftSection={<RefreshCw size={13} />} onClick={verify} loading={checking}>
+            疎通確認
+          </Button>
+        </Group>
+        <Text size="xs" c="dimmed">
+          x.com → DevTools → Application → Cookies → auth_token / ct0 をコピー
+        </Text>
+      </Stack>
+    </Card>
+  );
+}
+
 function WorkerStatusCard({
   workers,
   onToggle,
@@ -434,6 +582,8 @@ export function SettingsPage() {
         workers={workers}
         onToggle={(enabled) => patch({ twitter_polling_enabled: enabled })}
       />
+
+      <TwitterCookieCard />
 
       {loading ? (
         <Loader size="sm" />

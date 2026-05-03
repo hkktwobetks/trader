@@ -6,11 +6,9 @@ import { MantineProvider, createTheme } from "@mantine/core";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Dashboard } from "./pages/Dashboard";
 import { AppLayout } from "./pages/Layout";
-import { OverviewPage } from "./pages/Overview";
 import { SignalsPage } from "./pages/Signals";
 import { PerformancePage } from "./pages/Performance";
 import { BacktestPage } from "./pages/Backtest";
-import { TwitterCookiesPage } from "./pages/TwitterCookies";
 import { DexterPage } from "./pages/Dexter";
 import { SettingsPage } from "./pages/Settings";
 
@@ -35,12 +33,12 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       <BrowserRouter>
         <Routes>
           <Route element={<AppLayout />}>
-            <Route path="/" element={<OverviewPage />} />
+            <Route path="/" element={<PerformancePage />} />
             <Route path="/signals" element={<SignalsPage />} />
             <Route path="/performance" element={<PerformancePage />} />
+
             <Route path="/backtest" element={<BacktestPage />} />
             <Route path="/dexter" element={<DexterPage />} />
-            <Route path="/twitter-cookies" element={<TwitterCookiesPage />} />
             <Route path="/settings" element={<SettingsPage />} />
 
             {/* Legacy: old all-in-one tabs dashboard */}

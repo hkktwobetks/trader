@@ -7,8 +7,10 @@ class ExtractedSignal(BaseModel):
     side: str
     confidence: float | None = None
     timeframe: str | None = None
+    entry: float | None = None
     stop: float | None = None
     take: float | None = None
+    targets: list[float] = []
 
 
 class OrderIn(BaseModel):

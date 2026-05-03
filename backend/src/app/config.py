@@ -43,6 +43,9 @@ class Settings(BaseModel):
     moomoo_trade_password_md5: str = os.getenv("MOOMOO_TRADE_PASSWORD_MD5", "")
     moomoo_acc_id: Optional[int] = int(_moomoo_acc_raw) if _moomoo_acc_raw else None
 
+    line_channel_access_token: str = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
+    line_user_id: str = os.getenv("LINE_USER_ID", "")
+
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./trader.db")
 
 
