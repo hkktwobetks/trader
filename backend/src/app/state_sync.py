@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 from typing import Any
 
@@ -14,6 +14,7 @@ from broker import get_broker
 log = logging.getLogger(__name__)
 
 _TERMINAL_FILLED_STATUSES = {"FILLED"}
+HISTORY_DAYS = 180  # moomoo 約定履歴の取得日数
 
 
 def sync_orders(session: Session) -> list[Order]:
@@ -60,27 +61,52 @@ def sync_orders(session: Session) -> list[Order]:
 
 
 def sync_executions(session: Session) -> list[Execution]:
+    # ① このシステム経由の FILLED 注文
     filled_orders = session.exec(select(Order).where(Order.status.in_(_TERMINAL_FILLED_STATUSES))).all()
-    existing_order_ids = {
-        execution.order_id
-        for execution in session.exec(select(Execution)).all()
-    }
-
+    existing_order_ids = {e.order_id for e in session.exec(select(Execution)).all() if e.order_id}
     for order in filled_orders:
-        if order.id is None or order.id in existing_order_ids:
+        if order.id is None or order.id in existing_order_ids or order.price is None:
             continue
-        if order.price is None:
-            continue
-        session.add(
-            Execution(
-                order_id=order.id,
-                ticker=order.ticker,
-                side=order.side,
-                qty=order.qty,
-                price=order.price,
-                broker_env=order.broker_env,
-            )
-        )
+        session.add(Execution(
+            order_id=order.id,
+            ticker=order.ticker,
+            side=order.side,
+            qty=order.qty,
+            price=order.price,
+            broker_env=order.broker_env,
+        ))
+
+    # ② moomoo の約定履歴を直接インポート（手動取引も含む）
+    try:
+        broker = get_broker(broker_env="REAL")
+        fn = getattr(broker, "history_deals", None)
+        if callable(fn):
+            start = (datetime.now() - timedelta(days=HISTORY_DAYS)).strftime("%Y-%m-%d")
+            end = datetime.now().strftime("%Y-%m-%d")
+            deals = fn(start=start, end=end)
+            existing_deal_ids = {e.deal_id for e in session.exec(select(Execution)).all() if e.deal_id}
+            for deal in deals:
+                if not deal["deal_id"] or deal["deal_id"] in existing_deal_ids:
+                    continue
+                if deal["qty"] <= 0 or deal["price"] <= 0:
+                    continue
+                ts_str = deal.get("executed_at", "")
+                try:
+                    executed_at = datetime.strptime(ts_str[:19], "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    executed_at = datetime.utcnow()
+                session.add(Execution(
+                    deal_id=deal["deal_id"],
+                    ticker=deal["ticker"],
+                    side=deal["side"],
+                    qty=deal["qty"],
+                    price=deal["price"],
+                    broker_env=deal["broker_env"],
+                    executed_at=executed_at,
+                ))
+                existing_deal_ids.add(deal["deal_id"])
+    except Exception as exc:
+        log.warning("moomoo history_deals import failed: %s", exc)
 
     session.commit()
     return session.exec(select(Execution).order_by(Execution.executed_at.desc())).all()
@@ -106,10 +132,13 @@ def sync_positions(session: Session, broker_name: str | None = None, broker_env:
     session.exec(delete(Position).where(Position.broker_env == resolved_env))
     for acc_type, positions in positions_map.items():
         for ticker, data in positions.items():
+            qty = float(data.get("qty", 0.0))
+            if qty == 0:
+                continue  # moomoo が残す qty=0 レコードは無視
             session.add(
                 Position(
                     ticker=ticker,
-                    qty=float(data.get("qty", 0.0)),
+                    qty=qty,
                     avg_price=float(data.get("avg_price", 0.0)),
                     broker_env=resolved_env,
                     acc_type=acc_type,

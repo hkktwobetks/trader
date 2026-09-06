@@ -11,6 +11,7 @@ class Signal(SQLModel, table=True):
     content: str
     ticker: str
     side: str # BUY/SELL
+    signal_type: str | None = None  # ENTRY/EXIT
     confidence: float | None = None
     timeframe: str | None = None
     alert_type: str | None = None   # デイトレ / スイング / オプション
@@ -47,7 +48,8 @@ class Position(SQLModel, table=True):
 
 class Execution(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    order_id: int
+    order_id: Optional[int] = Field(default=None)   # local Order.id (system-placed)
+    deal_id: Optional[str] = Field(default=None)    # moomoo deal_id (imported)
     ticker: str
     side: str
     qty: float

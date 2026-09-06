@@ -46,6 +46,7 @@ type SignalBacktestResult = {
   wins: number;
   losses: number;
   open_trades: number;
+  no_fill: number;
   win_rate_pct: number;
   total_pnl: number;
   avg_rr: number | null;
@@ -65,12 +66,13 @@ function Metric({ label, value, color }: { label: string; value: string; color?:
 
 function OutcomeBadge({ outcome }: { outcome: string }) {
   const map: Record<string, { color: string; label: string }> = {
-    win: { color: "teal", label: "WIN" },
-    loss: { color: "red", label: "LOSS" },
-    open: { color: "blue", label: "OPEN" },
-    no_data: { color: "gray", label: "NO DATA" },
-    no_target: { color: "gray", label: "NO TARGET" },
-    no_entry: { color: "gray", label: "NO ENTRY" },
+    win:       { color: "teal",   label: "WIN" },
+    loss:      { color: "red",    label: "LOSS" },
+    open:      { color: "blue",   label: "OPEN" },
+    no_fill:   { color: "yellow", label: "NO FILL" },
+    no_data:   { color: "gray",   label: "NO DATA" },
+    no_target: { color: "gray",   label: "NO TARGET" },
+    no_entry:  { color: "gray",   label: "NO ENTRY" },
   };
   const m = map[outcome] ?? { color: "gray", label: outcome };
   return <Badge color={m.color} variant="light" size="sm">{m.label}</Badge>;
@@ -183,10 +185,12 @@ export function BacktestPage() {
             <Card withBorder mt="md" bg="gray.0">
               <Text size="xs" fw={700} mb={4}>シミュレーションロジック</Text>
               <Text size="xs" c="dimmed">
-                シグナルのエントリー価格でイン → 指定バーサイズで
-                ストップ（安値 ≤ stop）またはターゲット（高値 ≥ target）
-                の先ヒット側で決済。同バーでヒットはストップ優先。
-                5m/15m は直近 60 日、1m は 7 日が限界。古いシグナルは自動的に 1d にフォールバック。
+                <b>Phase 1</b>: エントリー価格に初めてタッチするバーを待つ
+                （BUY: 安値 ≤ entry / SELL: 高値 ≥ entry）。
+                到達しなければ NO FILL。<br />
+                <b>Phase 2</b>: 成立バー以降で安値 ≤ stop → LOSS、
+                高値 ≥ target → WIN を判定。同バーは LOSS 優先。<br />
+                5m/15m: 直近 60 日、1m: 7 日が上限。古いシグナルは 1d に自動フォールバック。
               </Text>
             </Card>
           </Card>
@@ -234,7 +238,8 @@ export function BacktestPage() {
                     <Text size="sm"><Text span fw={700}>{result.wins}</Text> <Text span c="teal">WIN</Text></Text>
                     <Text size="sm"><Text span fw={700}>{result.losses}</Text> <Text span c="red">LOSS</Text></Text>
                     <Text size="sm"><Text span fw={700}>{result.open_trades}</Text> <Text span c="blue">OPEN</Text></Text>
-                    <Text size="sm" c="dimmed">({result.tradeable} シミュレート可)</Text>
+                    <Text size="sm"><Text span fw={700}>{result.no_fill ?? 0}</Text> <Text span c="yellow.7">NO FILL</Text></Text>
+                    <Text size="sm" c="dimmed">({result.tradeable} エントリーあり)</Text>
                   </Group>
                   <Divider mb="sm" />
 

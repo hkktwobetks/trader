@@ -3,8 +3,48 @@ import datetime
 import hashlib
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Iterable, List
+
+_EXIT_RE = re.compile(r"利確")
+_PARTIAL_EXIT_RE = re.compile(r"[0-9０-９]+割利確|一部利確|半分利確|部分利確")
+_SL_RAISE_RE = re.compile(r"逆指値(?:を)?[ \t]*(\d+(?:\.\d+)?)")
+
+# 全角数字 → 半角
+_ZEN_DIGIT = str.maketrans("０１２３４５６７８９", "0123456789")
+
+
+def _parse_exit_fraction(text: str) -> float | None:
+    """
+    利確の割合を 0-1 の float で返す。
+    - "8割利確" → 0.8
+    - "半分利確" / "5割利確" → 0.5
+    - "全部利確" / "全量利確" → 1.0
+    - "50%利確" → 0.5
+    - "一部利確"（数字なし）→ None（割合不明）
+    """
+    t = text.translate(_ZEN_DIGIT)
+    # N割 (e.g. 8割, 7割5分)
+    m = re.search(r"(\d+(?:\.\d+)?)割(?:(\d+)分)?利確", t)
+    if m:
+        val = float(m.group(1)) + (float(m.group(2)) / 10 if m.group(2) else 0)
+        return min(val / 10, 1.0)
+    # N% (e.g. 80%利確)
+    m = re.search(r"(\d+(?:\.\d+)?)%利確", t)
+    if m:
+        return min(float(m.group(1)) / 100, 1.0)
+    # 半分
+    if re.search(r"半分利確", t):
+        return 0.5
+    # 全部・全量
+    if re.search(r"(?:全部|全量|全て|すべて)利確", t):
+        return 1.0
+    # 「利確」のみ（一部・部分 などの修飾語なし）→ 全量
+    if _EXIT_RE.search(t) and not _PARTIAL_EXIT_RE.search(t):
+        return 1.0
+    # 一部利確など割合不明
+    return None
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
@@ -31,6 +71,7 @@ _rt: dict[str, object] = {}
 _RT_FILE = Path(settings.database_url.replace("sqlite:///", "")).parent / "settings_rt.json"
 _RT_KEYS = frozenset({
     "broker_env", "twitter_broker_env", "dexter_broker_env",
+    "twitter_acc_type", "dexter_acc_type",
     "auto_trade_enabled", "twitter_polling_enabled",
     "twitter_auto_trade_enabled", "dexter_auto_trade_enabled",
 })
@@ -68,6 +109,14 @@ def on_startup():
     init_db()
     _load_rt()
     logger.setLevel(logging.INFO)
+    if settings.broker == "moomoo":
+        try:
+            from workers.price_reminder_worker import init_worker
+            from broker.moomoo_sdk import configure_sdk_encryption
+            is_encrypt = configure_sdk_encryption(settings.moomoo_rsa_private_key_path)
+            init_worker(settings.moomoo_opend_host, settings.moomoo_opend_port, is_encrypt).start()
+        except Exception as e:
+            logger.warning("PriceReminderWorker start failed: %s", e)
 
 
 llm_client: LLM | None = None
@@ -105,15 +154,16 @@ elif settings.llm_provider in {"openai", "local_openai"}:
         logger.warning("OpenAI LLM initialisation failed: %s", e)
 
 
-def extract_signal(text: str) -> ExtractedSignal | None:
+def extract_signal(text: str, parent_ticker: str | None = None) -> ExtractedSignal | None:
+    llm_text = f"[{parent_ticker} のアラートへの返信] {text}" if parent_ticker else text
     if llm_client:
         try:
-            result = llm_client.extract(text)
+            result = llm_client.extract(llm_text)
             if result:
                 return result
         except Exception as e:  # pragma: no cover - defensive logging
             logger.warning("LLM extraction failed: %s", e)
-    return naive_extract(text)
+    return naive_extract(llm_text)
 
 
 def ensure_int(value, default: int = 0) -> int:
@@ -150,7 +200,7 @@ def has_duplicate(session, keys: Iterable[str], url: str | None) -> bool:
     return False
 
 
-def resolve_signal_policy(source: str, meta: dict) -> tuple[str, bool]:
+def resolve_signal_policy(source: str, meta: dict) -> tuple[str, bool, str]:
     requested_env = str(meta.get("broker_env") or meta.get("target_env") or "").strip().upper()
     if requested_env in {"SIMULATE", "REAL"}:
         broker_env = requested_env
@@ -163,12 +213,15 @@ def resolve_signal_policy(source: str, meta: dict) -> tuple[str, bool]:
 
     if source == "twitter":
         auto_trade_enabled = bool(_get("twitter_auto_trade_enabled"))
+        acc_type = str(_get("twitter_acc_type") or "auto").lower()
     elif source == "dexter":
         auto_trade_enabled = bool(_get("dexter_auto_trade_enabled"))
+        acc_type = str(_get("dexter_acc_type") or "auto").lower()
     else:
         auto_trade_enabled = bool(_get("auto_trade_enabled"))
+        acc_type = "auto"
 
-    return broker_env, auto_trade_enabled
+    return broker_env, auto_trade_enabled, acc_type
 
 
 @app.get("/health")
@@ -183,6 +236,8 @@ class TradingSettingsOut(BaseModel):
     broker_env: str
     twitter_broker_env: str
     dexter_broker_env: str
+    twitter_acc_type: str
+    dexter_acc_type: str
     auto_trade_enabled: bool
     twitter_polling_enabled: bool
     twitter_auto_trade_enabled: bool
@@ -193,6 +248,8 @@ class TradingSettingsPatch(BaseModel):
     broker_env: str | None = None
     twitter_broker_env: str | None = None
     dexter_broker_env: str | None = None
+    twitter_acc_type: str | None = None
+    dexter_acc_type: str | None = None
     auto_trade_enabled: bool | None = None
     twitter_polling_enabled: bool | None = None
     twitter_auto_trade_enabled: bool | None = None
@@ -205,6 +262,8 @@ def _build_trading_settings() -> TradingSettingsOut:
         broker_env=str(_get("broker_env")).upper(),
         twitter_broker_env=str(_get("twitter_broker_env")).upper(),
         dexter_broker_env=str(_get("dexter_broker_env")).upper(),
+        twitter_acc_type=str(_get("twitter_acc_type") or "auto").lower(),
+        dexter_acc_type=str(_get("dexter_acc_type") or "auto").lower(),
         auto_trade_enabled=bool(_get("auto_trade_enabled")),
         twitter_polling_enabled=bool(_get("twitter_polling_enabled")),
         twitter_auto_trade_enabled=bool(_get("twitter_auto_trade_enabled")),
@@ -227,6 +286,13 @@ def patch_trading_settings(payload: TradingSettingsPatch):
                 raise HTTPException(status_code=422, detail=f"{env_key} must be SIMULATE or REAL")
             _rt[env_key] = v
             reset_broker_cache()
+    for acc_key in ("twitter_acc_type", "dexter_acc_type"):
+        val = getattr(payload, acc_key)
+        if val is not None:
+            v = val.lower()
+            if v not in {"auto", "margin", "cash"}:
+                raise HTTPException(status_code=422, detail=f"{acc_key} must be auto, margin, or cash")
+            _rt[acc_key] = v
     for bool_key in ("auto_trade_enabled", "twitter_polling_enabled", "twitter_auto_trade_enabled", "dexter_auto_trade_enabled"):
         val = getattr(payload, bool_key)
         if val is not None:
@@ -561,12 +627,21 @@ def list_signals():
 
 @app.post("/signals")
 def receive_signal(payload: SignalIn):
-    parsed = extract_signal(payload.text)
+    parent_ticker = (payload.meta.get("parent_ticker") or "").strip() or None
+
+    parsed = extract_signal(payload.text, parent_ticker=parent_ticker)
     if not parsed:
-        logger.warning(
-            "signal extraction failed source=%s meta=%s", payload.source, payload.meta
-        )
-        raise HTTPException(status_code=422, detail="Failed to extract signal from text")
+        # 返信ツイートで親のtickerが分かっている場合はアクションを推定
+        if parent_ticker:
+            is_full_exit = _EXIT_RE.search(payload.text) and not _PARTIAL_EXIT_RE.search(payload.text)
+            inferred_side = "SELL" if is_full_exit else "INFO"
+            parsed = ExtractedSignal(ticker=parent_ticker, side=inferred_side)
+            logger.info("reply fallback: ticker=%s side=%s text=%r", parent_ticker, inferred_side, payload.text[:60])
+        else:
+            logger.warning(
+                "signal extraction failed, storing as raw signal source=%s meta=%s", payload.source, payload.meta
+            )
+            parsed = ExtractedSignal(ticker="?", side="INFO")
 
     url = payload.meta.get("url")
     message_id_candidates: List[str] = []
@@ -594,7 +669,7 @@ def receive_signal(payload: SignalIn):
     if url and url not in content:
         content = f"{content}\n\nSource: {url}"
 
-    broker_env, source_auto_trade_enabled = resolve_signal_policy(payload.source, payload.meta)
+    broker_env, source_auto_trade_enabled, acc_type = resolve_signal_policy(payload.source, payload.meta)
 
     with get_session() as s:
         if has_duplicate(s, [message_id, *message_id_candidates[1:]], url):
@@ -615,6 +690,23 @@ def receive_signal(payload: SignalIn):
                 return "デイトレ"
             return None
 
+        def _detect_signal_type(side: str, content: str, has_levels: bool) -> str | None:
+            if side.upper() == "SELL":
+                if _EXIT_RE.search(content):
+                    return "EXIT"
+            elif side.upper() == "BUY" and has_levels:
+                return "ENTRY"
+            return None
+
+        if parsed.side.upper() == "INFO":
+            return {"signal": None, "broker_env": broker_env, "auto_trade_enabled": False, "order": None}
+
+        is_reply = bool(parent_ticker)
+        has_levels = parsed.stop is not None or parsed.take is not None or bool(parsed.targets)
+        if not is_reply and not has_levels:
+            logger.info("no stop/target, skipping non-reply signal ticker=%s side=%s", parsed.ticker, parsed.side)
+            return {"signal": None, "broker_env": broker_env, "auto_trade_enabled": False, "order": None}
+
         import json as _json
         signal = Signal(
             message_id=message_id,
@@ -623,6 +715,7 @@ def receive_signal(payload: SignalIn):
             content=content,
             ticker=parsed.ticker,
             side=parsed.side,
+            signal_type=_detect_signal_type(parsed.side, content, has_levels),
             confidence=parsed.confidence,
             timeframe=parsed.timeframe,
             alert_type=_detect_alert_type(content),
@@ -647,76 +740,265 @@ def receive_signal(payload: SignalIn):
         parsed.model_dump(),
     )
 
-    # 自動注文実行（信頼度閾値を超えた場合のみ）
+    # 自動注文実行
     order_result = None
-    
-    if source_auto_trade_enabled and parsed.confidence is not None and parsed.confidence >= settings.min_confidence:
+    _notify_skipped = False
+    _notify_skip_reason = ""
+    _notify_delta: float | None = None
+    _notify_original_entry: float | None = None
+    _auto_trade_blocked_reason: str | None = None
+    _notify_exit_fraction: float | None = (
+        _parse_exit_fraction(payload.text) if parsed.side.upper() == "SELL" else None
+    )
+
+    if not source_auto_trade_enabled:
+        _auto_trade_blocked_reason = "auto_trade=OFF"
+    elif parsed.side.upper() == "INFO":
+        _auto_trade_blocked_reason = "extraction failed"
+        # INFO でも逆指値引き上げなら price reminder だけ更新する
+        if source_auto_trade_enabled and parent_ticker and "引き上げ" in payload.text:
+            sl_m = _SL_RAISE_RE.search(payload.text)
+            if sl_m:
+                new_sl = float(sl_m.group(1))
+                try:
+                    broker = get_broker(broker_env=broker_env)
+                    if hasattr(broker, "clear_price_reminders") and hasattr(broker, "set_price_reminders"):
+                        broker.clear_price_reminders(parent_ticker)
+                        broker.set_price_reminders(parent_ticker, sl=new_sl, tp_list=[], side="BUY")
+                        _auto_trade_blocked_reason = f"SL更新 → {new_sl}"
+                        logger.info("SL updated (INFO path) ticker=%s new_sl=%.4f", parent_ticker, new_sl)
+                except Exception as sl_exc:
+                    logger.warning("SL update (INFO path) failed: %s", sl_exc)
+
+    if source_auto_trade_enabled and parsed.side.upper() != "INFO":
         try:
             broker = get_broker(broker_env=broker_env)
+            _broker_acc_type = acc_type if broker_env == "REAL" else None
 
-            requested_qty = ensure_float(payload.meta.get("qty"))
-            order_type = str(payload.meta.get("order_type") or "MARKET").upper()
-            limit_price = ensure_float(payload.meta.get("limit_price") or payload.meta.get("price"))
-            tif = str(payload.meta.get("tif") or "DAY").upper()
-
-            # 注文数量を計算（default_order_usd / price、価格がなければ1株）
-            qty = requested_qty if requested_qty and requested_qty > 0 else 1.0
-            quote_last_price = getattr(broker, "quote_last_price", None)
-            if requested_qty is None and callable(quote_last_price):
+            if parsed.side.upper() == "SELL":
+                # ── EXIT: 割合に応じたポジションをマーケット成行でクローズ ──────
+                exit_fraction = _parse_exit_fraction(payload.text)
                 try:
-                    last_price = float(quote_last_price(parsed.ticker))
-                    if last_price > 0:
-                        qty = max(settings.default_order_usd / last_price, 1.0)
-                        logger.info(
-                            "calculated order qty from live quote ticker=%s last_price=%s qty=%s",
-                            parsed.ticker,
-                            last_price,
-                            qty,
-                        )
-                except Exception as quote_exc:
-                    logger.warning("failed to fetch live quote for %s: %s", parsed.ticker, quote_exc)
+                    position_qty_fn = getattr(broker, "position_qty", None)
+                    if callable(position_qty_fn):
+                        pos_qty = position_qty_fn(parsed.ticker, _broker_acc_type)
+                    else:
+                        positions = broker.positions()
+                        pos = positions.get(parsed.ticker)
+                        pos_qty = float(pos.get("qty", 0)) if pos else 0.0
 
-            # リスクチェック
-            if not risk_guard.can_open(parsed.ticker, qty if parsed.side == "BUY" else -qty):
-                logger.warning("risk check failed for %s, skipping order", parsed.ticker)
+                    if exit_fraction is None:
+                        # "一部利確" など割合不明 → 自動売買しない
+                        _auto_trade_blocked_reason = "一部利確（割合不明）"
+                        logger.info("partial exit skipped (unknown fraction) ticker=%s", parsed.ticker)
+                    elif pos_qty <= 0:
+                        _auto_trade_blocked_reason = "no open position"
+                        logger.info("no position to exit ticker=%s broker_env=%s", parsed.ticker, broker_env)
+                    else:
+                        sell_qty = max(1.0, round(pos_qty * exit_fraction))
+                        is_full_exit = exit_fraction >= 1.0 or sell_qty >= pos_qty
+                        order_result = broker.place_order(
+                            ticker=parsed.ticker,
+                            side="SELL",
+                            qty=sell_qty,
+                            price=None,
+                            order_type="MARKET",
+                            tif="DAY",
+                            acc_type=_broker_acc_type,
+                        )
+                        with get_session() as s:
+                            s.add(Order(
+                                broker=broker.name,
+                                broker_env=broker_env,
+                                order_id=order_result.get("order_id"),
+                                ticker=parsed.ticker,
+                                side="SELL",
+                                qty=sell_qty,
+                                price=order_result.get("price"),
+                                status=order_result.get("status", "NEW"),
+                                signal_id=signal.id,
+                            ))
+                            s.commit()
+                        logger.info(
+                            "exit order placed signal_id=%s ticker=%s qty=%s/%s (%.0f%%) broker_env=%s status=%s",
+                            signal.id, parsed.ticker, sell_qty, pos_qty,
+                            exit_fraction * 100, broker_env, order_result.get("status"),
+                        )
+                        # 全量クローズ時のみ price reminder を削除
+                        if is_full_exit and hasattr(broker, "clear_price_reminders"):
+                            try:
+                                broker.clear_price_reminders(parsed.ticker)
+                            except Exception:
+                                pass
+                except Exception as exit_exc:
+                    logger.warning("exit order failed ticker=%s: %s", parsed.ticker, exit_exc)
+
+                # 逆指値引き上げ: 返信ツイートで SL 更新指示がある場合
+                if parent_ticker and "引き上げ" in payload.text:
+                    sl_m = _SL_RAISE_RE.search(payload.text)
+                    if sl_m:
+                        new_sl = float(sl_m.group(1))
+                        if hasattr(broker, "clear_price_reminders") and hasattr(broker, "set_price_reminders"):
+                            try:
+                                broker.clear_price_reminders(parsed.ticker)
+                                broker.set_price_reminders(parsed.ticker, sl=new_sl, tp_list=[], side="BUY")
+                                logger.info("SL updated ticker=%s new_sl=%.4f", parsed.ticker, new_sl)
+                            except Exception as sl_exc:
+                                logger.warning("SL update failed: %s", sl_exc)
+
             else:
-                order_result = broker.place_order(
-                    ticker=parsed.ticker,
-                    side=parsed.side,
-                    qty=qty,
-                    price=limit_price,
-                    order_type=order_type,
-                    tif=tif,
-                )
-                
-                # 注文をDBに保存
-                with get_session() as s:
-                    order = Order(
-                        broker=broker.name,
-                        broker_env=broker_env,
-                        order_id=order_result.get("order_id"),
+                # ── ENTRY (BUY): 既存ロジック ─────────────────────────────────
+                requested_qty = ensure_float(payload.meta.get("qty"))
+                order_type = str(payload.meta.get("order_type") or "MARKET").upper()
+                limit_price = ensure_float(payload.meta.get("limit_price") or payload.meta.get("price"))
+                tif = str(payload.meta.get("tif") or "DAY").upper()
+
+                qty = requested_qty if requested_qty and requested_qty > 0 else 1.0
+                current_price: float | None = None
+                quote_last_price = getattr(broker, "quote_last_price", None)
+                if callable(quote_last_price):
+                    try:
+                        current_price = float(quote_last_price(parsed.ticker))
+                        if current_price > 0 and requested_qty is None:
+                            qty = max(settings.default_order_usd / current_price, 1.0)
+                            logger.info(
+                                "calculated order qty from live quote ticker=%s last_price=%s qty=%s",
+                                parsed.ticker, current_price, qty,
+                            )
+                    except Exception as quote_exc:
+                        logger.warning("failed to fetch live quote for %s: %s", parsed.ticker, quote_exc)
+
+                # 価格乖離補正
+                signal_entry = ensure_float(parsed.entry)
+                price_skip = False
+                if signal_entry and current_price and current_price > 0:
+                    delta = current_price - signal_entry
+                    dev_pct = abs(delta) / signal_entry * 100
+                    if dev_pct > settings.max_price_deviation_pct:
+                        reason = f"price_deviation {delta:+.2f} ({dev_pct:.2f}%)"
+                        logger.warning(
+                            "price deviation too large signal_id=%s ticker=%s entry=%.4f current=%.4f deviation=%.2f%%",
+                            signal.id, parsed.ticker, signal_entry, current_price, dev_pct,
+                        )
+                        with get_session() as s:
+                            s.add(Order(
+                                broker=broker.name,
+                                broker_env=broker_env,
+                                ticker=parsed.ticker,
+                                side=parsed.side,
+                                qty=qty,
+                                price=signal_entry,
+                                status="SKIPPED",
+                                reason=reason,
+                                signal_id=signal.id,
+                            ))
+                            s.commit()
+                        price_skip = True
+                        _notify_skipped = True
+                        _notify_skip_reason = reason
+                    else:
+                        if parsed.entry is not None:
+                            parsed.entry = round(parsed.entry + delta, 4)
+                        if parsed.stop is not None:
+                            parsed.stop = round(parsed.stop + delta, 4)
+                        if parsed.take is not None:
+                            parsed.take = round(parsed.take + delta, 4)
+                        if parsed.targets:
+                            parsed.targets = [round(t + delta, 4) for t in parsed.targets]
+                        if limit_price is not None:
+                            limit_price = round(limit_price + delta, 4)
+                        _notify_delta = delta
+                        _notify_original_entry = signal_entry
+                        logger.info(
+                            "price shift applied signal_id=%s ticker=%s delta=%+.4f (%.2f%%) entry=%.4f→%.4f",
+                            signal.id, parsed.ticker, delta, dev_pct,
+                            signal_entry, parsed.entry or signal_entry,
+                        )
+
+                if price_skip:
+                    pass
+                elif not risk_guard.can_open(parsed.ticker, qty):
+                    logger.warning("risk check failed for %s, skipping order", parsed.ticker)
+                else:
+                    order_result = broker.place_order(
                         ticker=parsed.ticker,
                         side=parsed.side,
                         qty=qty,
-                        price=order_result.get("price"),
-                        status=order_result.get("status", "NEW"),
-                        reason=order_result.get("reason"),
-                        signal_id=signal.id,
+                        price=limit_price,
+                        order_type=order_type,
+                        tif=tif,
+                        acc_type=_broker_acc_type,
                     )
-                    s.add(order)
-                    s.commit()
-                
-                logger.info(
-                    "auto order placed signal_id=%s ticker=%s side=%s broker_env=%s status=%s",
-                    signal.id,
-                    parsed.ticker,
-                    parsed.side,
-                    broker_env,
-                    order_result.get("status"),
-                )
+                    with get_session() as s:
+                        order = Order(
+                            broker=broker.name,
+                            broker_env=broker_env,
+                            order_id=order_result.get("order_id"),
+                            ticker=parsed.ticker,
+                            side=parsed.side,
+                            qty=qty,
+                            price=order_result.get("price"),
+                            status=order_result.get("status", "NEW"),
+                            reason=order_result.get("reason"),
+                            signal_id=signal.id,
+                        )
+                        s.add(order)
+                        s.commit()
+                    logger.info(
+                        "auto order placed signal_id=%s ticker=%s side=%s broker_env=%s status=%s",
+                        signal.id, parsed.ticker, parsed.side, broker_env, order_result.get("status"),
+                    )
+                    if hasattr(broker, "set_price_reminders"):
+                        try:
+                            import json as _json
+                            _sl = ensure_float(parsed.stop)
+                            _tp_raw = parsed.targets or ([parsed.take] if parsed.take else [])
+                            _tp_list = [float(t) for t in _tp_raw if t is not None]
+                            broker.set_price_reminders(
+                                ticker=parsed.ticker, sl=_sl, tp_list=_tp_list, side=parsed.side,
+                            )
+                        except Exception as remind_exc:
+                            logger.warning("set_price_reminders failed: %s", remind_exc)
+
+                # 逆指値引き上げ (BUY エントリー後の SL 更新ツイートとして届いた場合)
+                if parent_ticker and "引き上げ" in payload.text and not price_skip:
+                    sl_m = _SL_RAISE_RE.search(payload.text)
+                    if sl_m:
+                        new_sl = float(sl_m.group(1))
+                        if hasattr(broker, "clear_price_reminders") and hasattr(broker, "set_price_reminders"):
+                            try:
+                                broker.clear_price_reminders(parsed.ticker)
+                                broker.set_price_reminders(parsed.ticker, sl=new_sl, tp_list=[], side="BUY")
+                                logger.info("SL updated ticker=%s new_sl=%.4f", parsed.ticker, new_sl)
+                            except Exception as sl_exc:
+                                logger.warning("SL update failed: %s", sl_exc)
+
         except Exception as e:
             reset_broker_cache()
             logger.error("auto order failed for signal_id=%s: %s", signal.id, e)
+
+    # ── LINE 通知（INFO は送らない） ──────────────────────────────────────────
+    if parsed.side.upper() != "INFO":
+        try:
+            from app.line_notify import notify_signal
+            _entry = ensure_float(parsed.entry)
+            _stop  = ensure_float(parsed.stop)
+            _tp_raw = parsed.targets or ([parsed.take] if parsed.take else [])
+            _targets = [float(t) for t in _tp_raw if t is not None]
+            notify_signal(
+                source=payload.source, ticker=parsed.ticker, side=parsed.side,
+                entry=_entry, stop=_stop, targets=_targets,
+                broker_env=broker_env, acc_type=acc_type,
+                shift_delta=_notify_delta,
+                original_entry=_notify_original_entry,
+                skipped=_notify_skipped, skip_reason=_notify_skip_reason,
+                order_placed=order_result is not None,
+                order_status=order_result.get("status", "") if order_result else "",
+                blocked_reason=_auto_trade_blocked_reason,
+                exit_fraction=_notify_exit_fraction,
+            )
+        except Exception as _notify_exc:
+            logger.warning("LINE notify failed: %s", _notify_exc)
 
     return {
         "signal": signal,
@@ -726,8 +1008,9 @@ def receive_signal(payload: SignalIn):
     }
 
 
-# ── LINE Webhook (userId capture) ──────────────────────
+# ── LINE Webhook ───────────────────────────────────────
 _line_captured_user_ids: list[str] = []
+_line_captured_replies: list[dict] = []
 
 
 @app.post("/line/webhook")
@@ -738,7 +1021,13 @@ async def line_webhook(request: Request):
             uid = event.get("source", {}).get("userId")
             if uid and uid not in _line_captured_user_ids:
                 _line_captured_user_ids.append(uid)
-                log.info("LINE userId captured: %s", uid)
+                logger.info("LINE userId captured: %s", uid)
+            if event.get("type") == "message" and event.get("message", {}).get("type") == "text":
+                text = event["message"].get("text", "").strip()
+                logger.info("LINE reply received uid=%s text=%s", uid, text)
+                _line_captured_replies.append({"uid": uid, "text": text})
+                if len(_line_captured_replies) > 100:
+                    _line_captured_replies.pop(0)
     except Exception:
         pass
     return {}
@@ -747,6 +1036,64 @@ async def line_webhook(request: Request):
 @app.get("/line/captured-users")
 def line_captured_users():
     return {"user_ids": _line_captured_user_ids}
+
+
+# ── Market Data ───────────────────────────────────────────────────────────────
+
+@app.get("/market/snapshot")
+def market_snapshot(codes: str = Query(..., description="カンマ区切りのティッカー")):
+    tickers = [t.strip() for t in codes.split(",") if t.strip()]
+    if not tickers:
+        raise HTTPException(status_code=422, detail="codes is required")
+    try:
+        broker = get_broker()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    if not hasattr(broker, "market_snapshot"):
+        raise HTTPException(status_code=501, detail="market snapshot not supported by this broker")
+    return broker.market_snapshot(tickers)
+
+
+@app.get("/screener/unusual")
+def screener_unusual(
+    ticker: str = Query(..., description="銘柄コード"),
+    type: str = Query("technical", description="technical | derivative"),
+):
+    try:
+        broker = get_broker()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    if not hasattr(broker, "screener_unusual"):
+        raise HTTPException(status_code=501, detail="screener not supported by this broker")
+    return broker.screener_unusual(ticker.upper(), type)
+
+
+@app.get("/account/cash-flow")
+def account_cash_flow(clearing_date: str = Query("", description="精算日 YYYY-MM-DD（空=当日）")):
+    try:
+        broker = get_broker()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    if not hasattr(broker, "cash_flow"):
+        raise HTTPException(status_code=501, detail="cash flow not supported by this broker")
+    return broker.cash_flow(clearing_date)
+
+
+@app.get("/executions/fees")
+def execution_fees():
+    """保存済み注文IDの手数料を moomoo から一括取得する。"""
+    with get_session() as s:
+        orders = s.exec(select(Order).where(Order.order_id.is_not(None))).all()
+        order_ids = [o.order_id for o in orders if o.order_id]
+    if not order_ids:
+        return {}
+    try:
+        broker = get_broker()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    if not hasattr(broker, "order_fees"):
+        raise HTTPException(status_code=501, detail="order fees not supported by this broker")
+    return broker.order_fees(order_ids)
 
 
 # ── Backtest ──────────────────────────────────────────────────────────────────

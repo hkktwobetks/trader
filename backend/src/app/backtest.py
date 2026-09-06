@@ -158,6 +158,7 @@ class SignalBacktestResult:
     wins: int
     losses: int
     open_trades: int
+    no_fill: int           # entry 価格に到達しなかった件数
     win_rate_pct: float
     total_pnl: float
     avg_rr: Optional[float]
@@ -193,7 +194,15 @@ def _simulate(
     df: Any,
     sig_date: date,
 ) -> tuple[str, Optional[float], Optional[str]]:
-    """Scan forward bars and return (outcome, exit_price, exit_date)."""
+    """
+    2フェーズ シミュレーション:
+      Phase 1 — エントリー価格に初めてタッチするバーを探す
+               BUY: Low <= entry で指値成立
+               SELL: High >= entry で指値成立
+               到達しなければ "no_fill" を返す
+      Phase 2 — 成立バー以降で stop / target をスキャン
+               同バー内では stop → target の順に優先（保守的）
+    """
     if df is None or df.empty:
         return "no_data", None, None
     if stop is None and target is None:
@@ -203,8 +212,7 @@ def _simulate(
     try:
         idx_dates = df.index.date
     except AttributeError:
-        idx_dates = df.index.to_pydatetime()
-        idx_dates = [d.date() for d in idx_dates]
+        idx_dates = [d.date() for d in df.index.to_pydatetime()]
     mask = [d >= sig_date for d in idx_dates]
     rows = df.loc[mask]
 
@@ -212,30 +220,44 @@ def _simulate(
         return "no_data", None, None
 
     is_long = side.upper() == "BUY"
+    rows_list = list(rows.iterrows())
 
-    for idx, row in rows.iterrows():
+    # ── Phase 1: エントリー成立バーを探す ──────────────────────────────
+    entry_idx: Optional[int] = None
+    for i, (_, row) in enumerate(rows_list):
         try:
-            o = float(row["Open"])
             h = float(row["High"])
             lo = float(row["Low"])
         except Exception:
             continue
-        # Derive a human-readable datetime string
+        if is_long and lo <= entry:
+            entry_idx = i
+            break
+        if not is_long and h >= entry:
+            entry_idx = i
+            break
+
+    if entry_idx is None:
+        return "no_fill", None, None  # 指値価格に一度も到達しなかった
+
+    # ── Phase 2: 成立バー以降で stop / target チェック ─────────────────
+    for idx, row in rows_list[entry_idx:]:
         try:
-            d = idx.isoformat()[:16]  # "YYYY-MM-DDTHH:MM" for intraday, "YYYY-MM-DD" for daily
+            h = float(row["High"])
+            lo = float(row["Low"])
+        except Exception:
+            continue
+        try:
+            d = idx.isoformat()[:16]
         except Exception:
             d = str(idx)[:16]
 
         if is_long:
-            if stop is not None and o <= stop:
-                return "loss", stop, d
             if stop is not None and lo <= stop:
                 return "loss", stop, d
             if target is not None and h >= target:
                 return "win", target, d
         else:
-            if stop is not None and o >= stop:
-                return "loss", stop, d
             if stop is not None and h >= stop:
                 return "loss", stop, d
             if target is not None and lo <= target:
@@ -255,6 +277,24 @@ _INTERVAL_MAX_DAYS: dict[str, int] = {
     "1h": 730,
     "1d": 9999,
 }
+
+
+def _download_bars_moomoo(sym: str, dl_start: str, dl_end: str, interval: str) -> Any:
+    """Download OHLCV from moomoo OpenD via the cached broker instance."""
+    try:
+        from broker import get_broker
+        broker = get_broker()
+        if not hasattr(broker, "history_kline"):
+            return None
+        df = broker.history_kline(sym, dl_start, dl_end, interval)
+        if df is None or (hasattr(df, "empty") and df.empty):
+            return None
+        # Strip timezone if present
+        if hasattr(df.index, "tz") and df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+        return df
+    except Exception:
+        return None
 
 
 def _download_bars(sym: str, dl_start: str, dl_end: str, interval: str) -> Any:
@@ -299,7 +339,7 @@ def run_signal_backtest(
 
     empty = SignalBacktestResult(
         start=start or "", end=end or "", ticker_filter=ticker,
-        total_signals=0, tradeable=0, wins=0, losses=0, open_trades=0,
+        total_signals=0, tradeable=0, wins=0, losses=0, open_trades=0, no_fill=0,
         win_rate_pct=0.0, total_pnl=0.0, avg_rr=None, trades=[],
     )
     if not signals:
@@ -323,14 +363,17 @@ def run_signal_backtest(
         days_back = (today - global_start).days
         effective_interval = interval if days_back <= max_days else "1d"
 
-        df = _download_bars(sym, dl_start, dl_end, effective_interval)
+        # Try moomoo kline first (more accurate for JP/HK/US markets), fall back to yfinance
+        df = _download_bars_moomoo(sym, dl_start, dl_end, effective_interval)
+        if df is None:
+            df = _download_bars(sym, dl_start, dl_end, effective_interval)
         # If intraday failed, retry with daily
         if df is None and effective_interval != "1d":
-            df = _download_bars(sym, dl_start, dl_end, "1d")
+            df = _download_bars_moomoo(sym, dl_start, dl_end, "1d") or _download_bars(sym, dl_start, dl_end, "1d")
         price_data[sym] = df
 
     trades: list[SignalTrade] = []
-    wins = losses = open_trades = tradeable = 0
+    wins = losses = open_trades = no_fill = tradeable = 0
     total_pnl = 0.0
     rr_list: list[float] = []
 
@@ -375,6 +418,8 @@ def run_signal_backtest(
                 losses += 1
         elif outcome == "open":
             open_trades += 1
+        elif outcome == "no_fill":
+            no_fill += 1
 
         trades.append(SignalTrade(
             signal_id=sig.id, ticker=sig.ticker, side=sig.side,
@@ -388,7 +433,7 @@ def run_signal_backtest(
     return SignalBacktestResult(
         start=start or "", end=end or "", ticker_filter=ticker,
         total_signals=len(signals), tradeable=tradeable,
-        wins=wins, losses=losses, open_trades=open_trades,
+        wins=wins, losses=losses, open_trades=open_trades, no_fill=no_fill,
         win_rate_pct=round(wins / simulated * 100, 1) if simulated > 0 else 0.0,
         total_pnl=round(total_pnl, 2),
         avg_rr=round(sum(rr_list) / len(rr_list), 2) if rr_list else None,

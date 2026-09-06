@@ -20,6 +20,7 @@ class Settings(BaseModel):
     max_daily_loss: float = float(os.getenv("MAX_DAILY_LOSS", "500"))
     max_position_per_ticker: int = int(os.getenv("MAX_POSITION_PER_TICKER", "2"))
     default_order_usd: float = float(os.getenv("DEFAULT_ORDER_USD", "200"))
+    max_price_deviation_pct: float = float(os.getenv("MAX_PRICE_DEVIATION_PCT", "2.0"))
     market: str = os.getenv("MARKET", "US")
 
     # 自動取引設定
@@ -30,6 +31,8 @@ class Settings(BaseModel):
     broker_env: str = os.getenv("BROKER_ENV", "SIMULATE")  # SIMULATE or REAL
     twitter_broker_env: str = os.getenv("TWITTER_BROKER_ENV", "REAL")
     dexter_broker_env: str = os.getenv("DEXTER_BROKER_ENV", "SIMULATE")
+    twitter_acc_type: str = os.getenv("TWITTER_ACC_TYPE", "margin")
+    dexter_acc_type: str = os.getenv("DEXTER_ACC_TYPE", "margin")
     twitter_polling_enabled: bool = os.getenv("TWITTER_POLLING_ENABLED", "true").lower() == "true"
     twitter_auto_trade_enabled: bool = os.getenv("TWITTER_AUTO_TRADE_ENABLED", "true").lower() == "true"
     dexter_auto_trade_enabled: bool = os.getenv("DEXTER_AUTO_TRADE_ENABLED", "false").lower() == "true"

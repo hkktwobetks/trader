@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActionIcon,
+  Alert,
   Badge,
   Box,
   Button,
@@ -8,6 +9,7 @@ import {
   Divider,
   Grid,
   Group,
+  Loader,
   SegmentedControl,
   Stack,
   Table,
@@ -16,7 +18,7 @@ import {
   Title,
   Tooltip,
 } from "@mantine/core";
-import { RefreshCw, Search } from "lucide-react";
+import { RefreshCw, Search, Telescope } from "lucide-react";
 
 const API = "/api";
 
@@ -25,6 +27,7 @@ type SignalRow = {
   author: string;
   ticker: string;
   side: string;
+  signal_type: string | null;
   confidence: number | null;
   alert_type: string | null;
   entry: number | null;
@@ -44,6 +47,7 @@ type OrderRow = {
   qty: number;
   price: number | null;
   status: string;
+  reason: string | null;
   created_at: string;
 };
 
@@ -57,13 +61,21 @@ type PositionRow = {
 
 function SideBadge({ side }: { side: string }) {
   const s = side.toLowerCase();
-  const color = s.includes("buy") ? "teal" : s.includes("sell") ? "red" : "gray";
+  const color = s.includes("buy") ? "teal" : s.includes("sell") ? "red" : s === "info" ? "violet" : "gray";
   return <Badge color={color} variant="light" size="sm">{side}</Badge>;
+}
+
+function SignalTypeBadge({ type }: { type: string | null }) {
+  if (!type) return <Text size="xs" c="dimmed">—</Text>;
+  const t = type.toUpperCase();
+  const color = t === "ENTRY" ? "blue" : t === "EXIT" ? "grape" : "gray";
+  const label = t === "ENTRY" ? "エントリー" : t === "EXIT" ? "エグジット" : type;
+  return <Badge color={color} variant="filled" size="sm">{label}</Badge>;
 }
 
 function StatusBadge({ status }: { status: string }) {
   const s = status.toLowerCase();
-  const color = s === "filled" ? "teal" : s === "canceled" ? "gray" : s === "rejected" ? "red" : "blue";
+  const color = s === "filled" ? "teal" : s === "canceled" ? "gray" : s === "rejected" ? "red" : s === "skipped" ? "orange" : "blue";
   return <Badge color={color} variant="light" size="sm">{status}</Badge>;
 }
 
@@ -75,6 +87,8 @@ function EnvBadge({ env }: { env: string }) {
   );
 }
 
+type ScreenerResult = Record<string, unknown>;
+
 export function SignalsPage() {
   const [env, setEnv] = useState<"SIMULATE" | "REAL">("REAL");
   const [accType, setAccType] = useState<"ALL" | "MARGIN" | "CASH">("ALL");
@@ -83,6 +97,14 @@ export function SignalsPage() {
   const [positions, setPositions] = useState<PositionRow[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState("");
+  const [typeFilter, setTypeFilter] = useState<"ALL" | "ENTRY" | "EXIT">("ALL");
+
+  // Screener state
+  const [screenerTicker, setScreenerTicker] = useState("");
+  const [screenerType, setScreenerType] = useState<"technical" | "derivative">("technical");
+  const [screenerLoading, setScreenerLoading] = useState(false);
+  const [screenerResults, setScreenerResults] = useState<ScreenerResult[] | null>(null);
+  const [screenerError, setScreenerError] = useState<string | null>(null);
 
   const fetchAll = async (e = env, at = accType) => {
     setRefreshing(true);
@@ -115,12 +137,48 @@ export function SignalsPage() {
 
   useEffect(() => { fetchAll(env, accType); }, []);
 
+  const runScreener = async () => {
+    const ticker = screenerTicker.trim().toUpperCase();
+    if (!ticker) return;
+    setScreenerLoading(true);
+    setScreenerError(null);
+    setScreenerResults(null);
+    try {
+      const res = await fetch(`/api/screener/unusual?ticker=${encodeURIComponent(ticker)}&type=${screenerType}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        setScreenerError(err.detail ?? res.statusText);
+        return;
+      }
+      const data = await res.json() as ScreenerResult[];
+      setScreenerResults(data);
+    } catch (e) {
+      setScreenerError(String(e));
+    } finally {
+      setScreenerLoading(false);
+    }
+  };
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return signals.filter((s) =>
-      !q || s.ticker.toLowerCase().includes(q) || s.author.toLowerCase().includes(q)
-    );
-  }, [signals, query]);
+    return signals.filter((s) => {
+      if (q && !s.ticker.toLowerCase().includes(q) && !s.author.toLowerCase().includes(q)) {
+        return false;
+      }
+      if (typeFilter === "ALL") return true;
+      const t = (s.signal_type ?? "").toUpperCase();
+      return t === typeFilter;
+    });
+  }, [signals, query, typeFilter]);
+
+  const entryCount = useMemo(
+    () => signals.filter((s) => (s.signal_type ?? "").toUpperCase() === "ENTRY").length,
+    [signals]
+  );
+  const exitCount = useMemo(
+    () => signals.filter((s) => (s.signal_type ?? "").toUpperCase() === "EXIT").length,
+    [signals]
+  );
 
   return (
     <Stack gap="lg">
@@ -153,6 +211,16 @@ export function SignalsPage() {
         <Group justify="space-between" mb="sm">
           <Text fw={700}>Signals <Text span c="dimmed" size="sm">({filtered.length})</Text></Text>
           <Group gap="sm">
+            <SegmentedControl
+              size="xs"
+              value={typeFilter}
+              onChange={(v) => setTypeFilter(v as "ALL" | "ENTRY" | "EXIT")}
+              data={[
+                { value: "ALL", label: `ALL (${signals.length})` },
+                { value: "ENTRY", label: `エントリー (${entryCount})` },
+                { value: "EXIT", label: `エグジット (${exitCount})` },
+              ]}
+            />
             <TextInput
               size="xs"
               leftSection={<Search size={13} />}
@@ -171,6 +239,7 @@ export function SignalsPage() {
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>Time</Table.Th>
+                <Table.Th>Type</Table.Th>
                 <Table.Th>Ticker</Table.Th>
                 <Table.Th>Side</Table.Th>
                 <Table.Th style={{ textAlign: "right" }}>Entry</Table.Th>
@@ -184,6 +253,7 @@ export function SignalsPage() {
                   <Table.Td style={{ whiteSpace: "nowrap", fontSize: 12 }}>
                     {new Date(s.created_at).toLocaleString("ja-JP")}
                   </Table.Td>
+                  <Table.Td><SignalTypeBadge type={s.signal_type} /></Table.Td>
                   <Table.Td>
                     <Group gap={4} wrap="nowrap">
                       <Text fw={700} size="sm">{s.ticker}</Text>
@@ -240,6 +310,7 @@ export function SignalsPage() {
                     <Table.Th style={{ textAlign: "right" }}>Qty</Table.Th>
                     <Table.Th>Status</Table.Th>
                     <Table.Th>Env</Table.Th>
+                    <Table.Th>Reason</Table.Th>
                   </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>
@@ -253,6 +324,9 @@ export function SignalsPage() {
                       <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>{o.qty}</Table.Td>
                       <Table.Td><StatusBadge status={o.status} /></Table.Td>
                       <Table.Td><EnvBadge env={o.broker_env} /></Table.Td>
+                      <Table.Td style={{ fontSize: 11, color: "var(--mantine-color-dimmed)" }}>
+                        {o.reason ?? ""}
+                      </Table.Td>
                     </Table.Tr>
                   ))}
                 </Table.Tbody>
@@ -317,6 +391,68 @@ export function SignalsPage() {
           </Card>
         </Grid.Col>
       </Grid>
+
+      {/* Stock Screener (Unusual Activity) */}
+      <Card withBorder>
+        <Group mb="sm" gap="sm">
+          <Telescope size={16} />
+          <Text fw={700}>Stock Screener</Text>
+          <Text span c="dimmed" size="sm">moomoo 異動分析（銘柄指定）</Text>
+        </Group>
+        <Divider mb="sm" />
+        <Group gap="sm" mb="md" wrap="nowrap">
+          <TextInput
+            placeholder="AAPL"
+            value={screenerTicker}
+            onChange={(e) => setScreenerTicker(e.currentTarget.value)}
+            onKeyDown={(e) => e.key === "Enter" && runScreener()}
+            style={{ width: 120 }}
+            size="xs"
+          />
+          <SegmentedControl
+            size="xs"
+            value={screenerType}
+            onChange={(v) => setScreenerType(v as "technical" | "derivative")}
+            data={[
+              { value: "technical", label: "テクニカル" },
+              { value: "derivative", label: "デリバティブ" },
+            ]}
+          />
+          <Button size="xs" onClick={runScreener} loading={screenerLoading} leftSection={<Search size={13} />}>
+            検索
+          </Button>
+        </Group>
+
+        {screenerLoading && <Loader size="sm" />}
+        {screenerError && (
+          <Alert color="red" title="エラー" mb="sm">{screenerError}</Alert>
+        )}
+        {screenerResults !== null && screenerResults.length === 0 && (
+          <Text size="sm" c="dimmed">結果がありません（moomoo 接続・銘柄コードを確認してください）</Text>
+        )}
+        {screenerResults && screenerResults.length > 0 && (
+          <Table striped highlightOnHover>
+            <Table.Thead>
+              <Table.Tr>
+                {Object.keys(screenerResults[0]).slice(0, 8).map((col) => (
+                  <Table.Th key={col} style={{ whiteSpace: "nowrap", fontSize: 12 }}>{col}</Table.Th>
+                ))}
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {screenerResults.map((row, i) => (
+                <Table.Tr key={i}>
+                  {Object.values(row).slice(0, 8).map((val, j) => (
+                    <Table.Td key={j} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+                      {String(val ?? "—")}
+                    </Table.Td>
+                  ))}
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        )}
+      </Card>
     </Stack>
   );
 }

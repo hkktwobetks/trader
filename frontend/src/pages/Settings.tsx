@@ -26,6 +26,8 @@ type TradingSettings = {
   broker_env: string;
   twitter_broker_env: string;
   dexter_broker_env: string;
+  twitter_acc_type: string;
+  dexter_acc_type: string;
   auto_trade_enabled: boolean;
   twitter_polling_enabled: boolean;
   twitter_auto_trade_enabled: boolean;
@@ -94,6 +96,52 @@ function EnvControl({
           indicator: {
             background: value === "REAL" ? theme.colors.orange[1] : theme.white,
             border: value === "REAL" ? `1.5px solid ${theme.colors.orange[4]}` : undefined,
+          },
+        })}
+      />
+    </Group>
+  );
+}
+
+function EnvAccControl({
+  label,
+  sub,
+  brokerEnv,
+  accType,
+  onChange,
+}: {
+  label: string;
+  sub?: string;
+  brokerEnv: "REAL" | "SIMULATE";
+  accType: string;
+  onChange: (env: "REAL" | "SIMULATE", acc: "margin" | "cash") => void;
+}) {
+  const combined = brokerEnv === "SIMULATE" ? "SIMULATE" : accType === "cash" ? "REAL_CASH" : "REAL_MARGIN";
+  const isReal = brokerEnv === "REAL";
+  return (
+    <Group justify="space-between" align="center" wrap="nowrap">
+      <Box>
+        <Text size="sm" fw={600}>{label}</Text>
+        {sub && <Text size="xs" c="dimmed">{sub}</Text>}
+      </Box>
+      <SegmentedControl
+        size="xs"
+        value={combined}
+        onChange={(v) => {
+          if (v === "SIMULATE") onChange("SIMULATE", accType === "cash" ? "cash" : "margin");
+          else if (v === "REAL_MARGIN") onChange("REAL", "margin");
+          else onChange("REAL", "cash");
+        }}
+        data={[
+          { value: "SIMULATE",    label: <Text size="xs" fw={600}>SIMULATE</Text> },
+          { value: "REAL_MARGIN", label: <Text size="xs" fw={700} c={combined === "REAL_MARGIN" ? "orange" : undefined}>REAL 信用</Text> },
+          { value: "REAL_CASH",   label: <Text size="xs" fw={700} c={combined === "REAL_CASH" ? "orange" : undefined}>REAL 現物</Text> },
+        ]}
+        styles={(theme) => ({
+          root: { background: theme.colors.gray[1] },
+          indicator: {
+            background: isReal ? theme.colors.orange[1] : theme.white,
+            border: isReal ? `1.5px solid ${theme.colors.orange[4]}` : undefined,
           },
         })}
       />
@@ -459,9 +507,11 @@ function TwitterCookieCard() {
 function WorkerStatusCard({
   workers,
   onToggle,
+  pollingEnabled,
 }: {
   workers: WorkersStatus | null;
   onToggle: (enabled: boolean) => void;
+  pollingEnabled: boolean;
 }) {
   const tw = workers?.twitter;
 
@@ -494,9 +544,9 @@ function WorkerStatusCard({
         </Group>
         <Switch
           size="sm"
-          checked={tw?.enabled ?? true}
+          checked={pollingEnabled}
           onChange={(e) => onToggle(e.currentTarget.checked)}
-          label={tw?.enabled ? "ON" : "OFF"}
+          label={pollingEnabled ? "ON" : "OFF"}
           color="teal"
         />
       </Group>
@@ -581,6 +631,7 @@ export function SettingsPage() {
       <WorkerStatusCard
         workers={workers}
         onToggle={(enabled) => patch({ twitter_polling_enabled: enabled })}
+        pollingEnabled={settings?.twitter_polling_enabled ?? true}
       />
 
       <TwitterCookieCard />
@@ -608,18 +659,20 @@ export function SettingsPage() {
                 onChange={(v) => patch({ broker_env: v })}
               />
               <Divider />
-              <EnvControl
+              <EnvAccControl
                 label="Twitter"
                 sub="Twitter/X から取得したシグナル"
-                value={settings.twitter_broker_env as "REAL" | "SIMULATE"}
-                onChange={(v) => patch({ twitter_broker_env: v })}
+                brokerEnv={settings.twitter_broker_env as "REAL" | "SIMULATE"}
+                accType={settings.twitter_acc_type || "margin"}
+                onChange={(env, acc) => patch({ twitter_broker_env: env, twitter_acc_type: acc })}
               />
               <Divider />
-              <EnvControl
+              <EnvAccControl
                 label="Dexter"
                 sub="Dexter エージェントが生成したシグナル"
-                value={settings.dexter_broker_env as "REAL" | "SIMULATE"}
-                onChange={(v) => patch({ dexter_broker_env: v })}
+                brokerEnv={settings.dexter_broker_env as "REAL" | "SIMULATE"}
+                accType={settings.dexter_acc_type || "margin"}
+                onChange={(env, acc) => patch({ dexter_broker_env: env, dexter_acc_type: acc })}
               />
             </Stack>
           </Card>

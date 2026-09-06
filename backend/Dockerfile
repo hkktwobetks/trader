@@ -17,6 +17,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-group dev --no-install-project
 
 COPY src ./src
+COPY alembic.ini ./
 COPY run_api.sh run_bot.sh ./
 RUN mkdir -p /app/data
 RUN uv sync --frozen --no-group dev
@@ -26,4 +27,5 @@ ENV PYTHONPATH=/app/src \
     PATH="/app/.venv/bin:/root/.local/bin:$PATH"
 
 EXPOSE 8000
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 起動前に pending な Alembic マイグレーションを自動適用する
+CMD ["sh", "-c", "alembic upgrade head && uvicorn api.main:app --host 0.0.0.0 --port 8000"]

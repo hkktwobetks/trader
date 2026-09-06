@@ -24,6 +24,7 @@ dependencies = [
     "yfinance>=0.2",
     "pandas>=2",
     "psycopg2-binary>=2.9",
+    "alembic>=1.13",
 ]
 
 [tool.setuptools.packages.find]
